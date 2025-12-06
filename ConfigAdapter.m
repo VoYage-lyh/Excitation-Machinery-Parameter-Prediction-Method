@@ -199,27 +199,195 @@ end
 
 %% ==================== 构建所有分枝参数 ====================
 function predefined = buildAllBranchParams(preConfig, identifiedParams)
+    % 构建所有分枝的物理参数（root, mid, tip 段）
+    % 输入:
+    %   preConfig - 来自GUI的预配置（包含primary, secondary, tertiary几何参数）
+    %   identifiedParams - 识别的参数（可选，用于更新刚度阻尼）
+    % 输出:
+    %   predefined - 包含所有分枝段参数的结构体
+    
     predefined = struct();
     
-    % 获取分枝几何数据
-    branches = preConfig.branches;
-    branchNames = fieldnames(branches);
-    
-    for i = 1:length(branchNames)
-        name = branchNames{i};
-        b = branches.(name);
-        
-        % 基于几何估算刚度阻尼（如果没有识别结果）
-        [k_base, c_base] = estimateStiffnessDamping(b);
-        
-        % 生成分枝参数
-        predefined.(name) = generateBranchSegmentParams(b, k_base, c_base);
-        
-        % 确定是否需要挂果
-        branchLevel = determineBranchLevel(name);
-        predefined.(name).branch_level = branchLevel;
-        
+    % --- 处理一级分枝 ---
+    if isfield(preConfig, 'primary') && isstruct(preConfig.primary)
+        pFields = fieldnames(preConfig.primary);
+        for i = 1:length(pFields)
+            name = pFields{i};
+            b = preConfig.primary.(name);
+            
+            % 基于几何估算刚度阻尼
+            [k_base, c_base] = estimateStiffnessDamping(b);
+            
+            % 如果有识别参数，尝试使用识别值
+            if ~isempty(identifiedParams) && isfield(identifiedParams, 'branches')
+                if isfield(identifiedParams.branches, name)
+                    k_base = identifiedParams.branches.(name).k_base;
+                    c_base = identifiedParams.branches.(name).c_base;
+                end
+            end
+            
+            % 生成分枝段参数
+            predefined.(name) = generateBranchSegmentParams(b, k_base, c_base);
+            predefined.(name).branch_level = 1;
+        end
     end
+    
+    % --- 处理二级分枝 ---
+    if isfield(preConfig, 'secondary') && isstruct(preConfig.secondary)
+        sFields = fieldnames(preConfig.secondary);
+        for i = 1:length(sFields)
+            name = sFields{i};
+            b = preConfig.secondary.(name);
+            
+            [k_base, c_base] = estimateStiffnessDamping(b);
+            
+            if ~isempty(identifiedParams) && isfield(identifiedParams, 'branches')
+                if isfield(identifiedParams.branches, name)
+                    k_base = identifiedParams.branches.(name).k_base;
+                    c_base = identifiedParams.branches.(name).c_base;
+                end
+            end
+            
+            predefined.(name) = generateBranchSegmentParams(b, k_base, c_base);
+            predefined.(name).branch_level = 2;
+        end
+    end
+    
+    % --- 处理三级分枝 ---
+    if isfield(preConfig, 'tertiary') && isstruct(preConfig.tertiary)
+        tFields = fieldnames(preConfig.tertiary);
+        for i = 1:length(tFields)
+            name = tFields{i};
+            b = preConfig.tertiary.(name);
+            
+            [k_base, c_base] = estimateStiffnessDamping(b);
+            
+            if ~isempty(identifiedParams) && isfield(identifiedParams, 'branches')
+                if isfield(identifiedParams.branches, name)
+                    k_base = identifiedParams.branches.(name).k_base;
+                    c_base = identifiedParams.branches.(name).c_base;
+                end
+            end
+            
+            predefined.(name) = generateBranchSegmentParams(b, k_base, c_base);
+            predefined.(name).branch_level = 3;
+        end
+    end
+    
+    % 验证生成的参数
+    validatePredefinedParams(predefined, preConfig);
+end
+
+%% ==================== 验证预定义参数完整性 ====================
+function validatePredefinedParams(predefined, preConfig)
+    % 验证所有必需的分枝参数是否都已生成
+    
+    missingBranches = {};
+    
+    % 检查一级分枝
+    num_p = preConfig.topology.num_primary_branches;
+    for p = 1:num_p
+        branch_id = sprintf('P%d', p);
+        if ~isfield(predefined, branch_id)
+            missingBranches{end+1} = branch_id;
+        end
+    end
+    
+    % 检查二级分枝
+    for p = 1:num_p
+        num_s = preConfig.topology.secondary_branches_count(p);
+        for s = 1:num_s
+            branch_id = sprintf('P%d_S%d', p, s);
+            if ~isfield(predefined, branch_id)
+                missingBranches{end+1} = branch_id;
+            end
+        end
+    end
+    
+    % 检查三级分枝
+    for p = 1:num_p
+        if p <= length(preConfig.topology.tertiary_branches_count)
+            tertiary_for_p = preConfig.topology.tertiary_branches_count{p};
+            num_s = preConfig.topology.secondary_branches_count(p);
+            for s = 1:num_s
+                if s <= length(tertiary_for_p)
+                    num_t = tertiary_for_p(s);
+                    for t = 1:num_t
+                        branch_id = sprintf('P%d_S%d_T%d', p, s, t);
+                        if ~isfield(predefined, branch_id)
+                            missingBranches{end+1} = branch_id;
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    % 报告缺失的分枝
+    if ~isempty(missingBranches)
+        warning('ConfigAdapter:MissingBranches', ...
+                '以下分枝在预配置中缺少几何参数，将使用默认值:\n  %s', ...
+                strjoin(missingBranches, ', '));
+        
+        % 为缺失的分枝生成默认参数
+        for i = 1:length(missingBranches)
+            branch_id = missingBranches{i};
+            predefined.(branch_id) = generateDefaultBranchSegment(branch_id);
+        end
+    end
+end
+
+%% ==================== 为缺失分枝生成默认段参数 ====================
+function params = generateDefaultBranchSegment(branch_id)
+    % 根据分枝ID生成默认参数
+    
+    % 确定分枝级别
+    if contains(branch_id, '_T')
+        level = 3;
+        m_total = 0.5;
+        k_base = 200;
+        c_base = 1;
+    elseif contains(branch_id, '_S')
+        level = 2;
+        m_total = 2.0;
+        k_base = 800;
+        c_base = 5;
+    else
+        level = 1;
+        m_total = 5.0;
+        k_base = 3000;
+        c_base = 20;
+    end
+    
+    z_factor = 1.0;
+    mass_dist = [0.5, 0.3, 0.2];
+    k_taper = [0.5, 0.3, 0.2];
+    c_taper = [1.0, 0.8, 0.6];
+    
+    params = struct();
+    params.branch_level = level;
+    
+    params.root.m = m_total * mass_dist(1);
+    params.root.k_y_conn = k_base * k_taper(1);
+    params.root.c_y_conn = c_base * c_taper(1);
+    params.root.k_z_conn = k_base * k_taper(1) * z_factor;
+    params.root.c_z_conn = c_base * c_taper(1) * z_factor;
+    
+    params.mid.m = m_total * mass_dist(2);
+    params.mid.k_y_conn = k_base * k_taper(2);
+    params.mid.c_y_conn = c_base * c_taper(2);
+    params.mid.k_z_conn = k_base * k_taper(2) * z_factor;
+    params.mid.c_z_conn = c_base * c_taper(2) * z_factor;
+    
+    params.tip.m = m_total * mass_dist(3);
+    params.tip.k_y_conn = k_base * k_taper(3);
+    params.tip.c_y_conn = c_base * c_taper(3);
+    params.tip.k_z_conn = k_base * k_taper(3) * z_factor;
+    params.tip.c_z_conn = c_base * c_taper(3) * z_factor;
+    
+    params.geometry.length = 0.3;
+    params.geometry.diameter_base = 0.02;
+    params.geometry.diameter_tip = 0.01;
 end
 
 %% ==================== 生成单个分枝的段参数 ====================
@@ -227,7 +395,12 @@ function params = generateBranchSegmentParams(branchGeom, k_base, c_base)
     params = struct();
     
     z_factor = 1.0;
-    m_dist = branchGeom.mass_dist;
+    
+    if isfield(branchGeom, 'mass_dist')
+        m_dist = branchGeom.mass_dist;
+    else
+        m_dist = [0.5, 0.3, 0.2];
+    end
     m_total = branchGeom.total_mass;
     
     % 刚度阻尼递减因子

@@ -141,50 +141,11 @@ function config = getDefaultConfig()
     config.trunk.mass_distribution = [0.4, 0.35, 0.25];  % root/mid/tip质量分配
     config.trunk.z_factor = 1.0;                % Z方向刚度因子
     
-    % 一级分枝几何与质量（P1, P2, P3）
-    config.primary = struct();
-    config.primary.P1 = struct('total_mass', 9.13, 'length', 1.2, ...
-                               'diameter_base', 0.06, 'diameter_tip', 0.025, ...
-                               'mass_dist', [0.5, 0.3, 0.2]);
-    config.primary.P2 = struct('total_mass', 6.78, 'length', 1.0, ...
-                               'diameter_base', 0.05, 'diameter_tip', 0.02, ...
-                               'mass_dist', [0.5, 0.3, 0.2]);
-    config.primary.P3 = struct('total_mass', 1.56, 'length', 0.8, ...
-                               'diameter_base', 0.04, 'diameter_tip', 0.015, ...
-                               'mass_dist', [0.5, 0.3, 0.2]);
-    
-    % 二级分枝几何与质量
-    config.secondary = struct();
-    config.secondary.P1_S1 = struct('total_mass', 2.19, 'length', 0.6, ...
-                                    'diameter_base', 0.025, 'diameter_tip', 0.012, ...
-                                    'mass_dist', [0.5, 0.3, 0.2]);
-    config.secondary.P1_S2 = struct('total_mass', 2.79, 'length', 0.7, ...
-                                    'diameter_base', 0.028, 'diameter_tip', 0.014, ...
-                                    'mass_dist', [0.5, 0.3, 0.2]);
-    config.secondary.P2_S1 = struct('total_mass', 0.16, 'length', 0.3, ...
-                                    'diameter_base', 0.015, 'diameter_tip', 0.008, ...
-                                    'mass_dist', [0.5, 0.3, 0.2]);
-    config.secondary.P3_S1 = struct('total_mass', 1.97, 'length', 0.5, ...
-                                    'diameter_base', 0.022, 'diameter_tip', 0.011, ...
-                                    'mass_dist', [0.5, 0.3, 0.2]);
-    config.secondary.P3_S2 = struct('total_mass', 1.85, 'length', 0.5, ...
-                                    'diameter_base', 0.020, 'diameter_tip', 0.010, ...
-                                    'mass_dist', [0.5, 0.3, 0.2]);
-    
-    % 三级分枝几何与质量
-    config.tertiary = struct();
-    config.tertiary.P1_S1_T1 = struct('total_mass', 0.57, 'length', 0.25, ...
-                                      'diameter_base', 0.012, 'diameter_tip', 0.006, ...
-                                      'mass_dist', [0.5, 0.3, 0.2]);
-    config.tertiary.P1_S2_T1 = struct('total_mass', 1.01, 'length', 0.3, ...
-                                      'diameter_base', 0.014, 'diameter_tip', 0.007, ...
-                                      'mass_dist', [0.5, 0.3, 0.2]);
-    config.tertiary.P1_S2_T2 = struct('total_mass', 0.43, 'length', 0.2, ...
-                                      'diameter_base', 0.010, 'diameter_tip', 0.005, ...
-                                      'mass_dist', [0.5, 0.3, 0.2]);
-    config.tertiary.P3_S1_T1 = struct('total_mass', 0.06, 'length', 0.15, ...
-                                      'diameter_base', 0.008, 'diameter_tip', 0.004, ...
-                                      'mass_dist', [0.5, 0.3, 0.2]);
+    % 根据拓扑结构动态生成分枝参数
+    [config.primary, config.secondary, config.tertiary] = generateDefaultBranchParams(...
+        config.topology.num_primary_branches, ...
+        config.topology.secondary_branches_count, ...
+        config.topology.tertiary_branches_count);
     
     % 果实参数（物理属性）
     config.fruit.mass = 0.08;                   % 单个果实质量 (kg)
@@ -1005,8 +966,151 @@ function val = getCheckValue(fig, tag)
     val = get(h(1), 'Value') == 1;
 end
 
-function updateUIFromConfig(~, ~)
-    % TODO: 实现从配置更新UI
+%% ==================== 从配置更新UI ====================
+function updateUIFromConfig(fig, config)
+    % 从配置结构体更新所有UI控件的值
+    
+    % --- 基础设置 ---
+    setEditValue(fig, 'edit_workFolder', config.basic.workFolder);
+    setEditValue(fig, 'edit_modelName', config.basic.modelName);
+    setEditValue(fig, 'edit_gravity', num2str(config.basic.gravity_g));
+    setCheckValue(fig, 'check_parallel', config.basic.useParallel);
+    
+    % --- 信号处理参数 ---
+    setEditValue(fig, 'edit_fs', num2str(config.signal.fs_target));
+    setEditValue(fig, 'edit_cutoff', num2str(config.signal.cutoff_freq));
+    setEditValue(fig, 'edit_filterOrder', num2str(config.signal.filter_order));
+    setEditValue(fig, 'edit_nfft', num2str(config.signal.nfft));
+    setEditValue(fig, 'edit_freqMin', num2str(config.signal.freq_range_min));
+    setEditValue(fig, 'edit_freqMax', num2str(config.signal.freq_range_max));
+    setEditValue(fig, 'edit_snrThreshold', num2str(config.signal.snr_threshold));
+    
+    % --- 拓扑结构 ---
+    setEditValue(fig, 'edit_numPrimary', num2str(config.topology.num_primary_branches));
+    setEditValue(fig, 'edit_secondaryCount', mat2str(config.topology.secondary_branches_count));
+    
+    % 三级分枝数量转换为字符串格式
+    tertiaryParts = cell(1, length(config.topology.tertiary_branches_count));
+    for i = 1:length(config.topology.tertiary_branches_count)
+        tertiaryParts{i} = mat2str(config.topology.tertiary_branches_count{i});
+    end
+    setEditValue(fig, 'edit_tertiaryCount', strjoin(tertiaryParts, '; '));
+    
+    % --- 主干参数 ---
+    setEditValue(fig, 'edit_trunk_mass', num2str(config.trunk.total_mass));
+    setEditValue(fig, 'edit_trunk_length', num2str(config.trunk.length));
+    setEditValue(fig, 'edit_trunk_dBase', num2str(config.trunk.diameter_base));
+    setEditValue(fig, 'edit_trunk_dTip', num2str(config.trunk.diameter_tip));
+    setEditValue(fig, 'edit_trunk_zfactor', num2str(config.trunk.z_factor));
+    setEditValue(fig, 'edit_trunk_massDist', mat2str(config.trunk.mass_distribution));
+    
+    % --- 分枝参数表格 ---
+    hTable = findobj(fig, 'Tag', 'table_branches');
+    if ~isempty(hTable)
+        tableData = {};
+        
+        % 一级分枝
+        if isfield(config, 'primary') && isstruct(config.primary)
+            pFields = fieldnames(config.primary);
+            for i = 1:length(pFields)
+                p = config.primary.(pFields{i});
+                tableData(end+1, :) = {pFields{i}, p.total_mass, p.length, ...
+                                       p.diameter_base, p.diameter_tip, mat2str(p.mass_dist)};
+            end
+        end
+        
+        % 二级分枝
+        if isfield(config, 'secondary') && isstruct(config.secondary)
+            sFields = fieldnames(config.secondary);
+            for i = 1:length(sFields)
+                s = config.secondary.(sFields{i});
+                tableData(end+1, :) = {sFields{i}, s.total_mass, s.length, ...
+                                       s.diameter_base, s.diameter_tip, mat2str(s.mass_dist)};
+            end
+        end
+        
+        % 三级分枝
+        if isfield(config, 'tertiary') && isstruct(config.tertiary)
+            tFields = fieldnames(config.tertiary);
+            for i = 1:length(tFields)
+                t = config.tertiary.(tFields{i});
+                tableData(end+1, :) = {tFields{i}, t.total_mass, t.length, ...
+                                       t.diameter_base, t.diameter_tip, mat2str(t.mass_dist)};
+            end
+        end
+        
+        set(hTable, 'Data', tableData);
+    end
+    
+    % --- 果实参数 ---
+    setEditValue(fig, 'edit_fruit_mass', num2str(config.fruit.mass));
+    setEditValue(fig, 'edit_fruit_diameter', num2str(config.fruit.diameter));
+    setEditValue(fig, 'edit_fruit_pedicel_length', num2str(config.fruit.pedicel_length));
+    setEditValue(fig, 'edit_fruit_pedicel_diameter', num2str(config.fruit.pedicel_diameter));
+    setEditValue(fig, 'edit_fruit_Fbreak_mean', num2str(config.fruit.F_break_mean));
+    setEditValue(fig, 'edit_fruit_Fbreak_std', num2str(config.fruit.F_break_std));
+    
+    % 挂果位置配置
+    setCheckValue(fig, 'check_secondary_mid', config.fruit.attach_secondary_mid);
+    setCheckValue(fig, 'check_secondary_tip', config.fruit.attach_secondary_tip);
+    setCheckValue(fig, 'check_tertiary_mid', config.fruit.attach_tertiary_mid);
+    setCheckValue(fig, 'check_tertiary_tip', config.fruit.attach_tertiary_tip);
+    setEditValue(fig, 'edit_fruits_per_node', num2str(config.fruit.fruits_per_node));
+    
+    % --- 激励参数 ---
+    % 激励类型单选按钮
+    bg = findobj(fig, 'Tag', 'bg_excitationType');
+    if ~isempty(bg)
+        if strcmp(config.excitation.type, 'sine')
+            btnTag = 'radio_sine';
+        else
+            btnTag = 'radio_impulse';
+        end
+        btn = findobj(fig, 'Tag', btnTag);
+        if ~isempty(btn)
+            set(bg, 'SelectedObject', btn);
+        end
+    end
+    
+    setEditValue(fig, 'edit_sine_amp_y', num2str(config.excitation.sine_amplitude_y));
+    setEditValue(fig, 'edit_sine_amp_z', num2str(config.excitation.sine_amplitude_z));
+    setEditValue(fig, 'edit_frequency', num2str(config.excitation.frequency_hz));
+    setEditValue(fig, 'edit_phase_y', num2str(config.excitation.phase_y_rad));
+    setEditValue(fig, 'edit_phase_z', num2str(config.excitation.phase_z_rad));
+    setEditValue(fig, 'edit_impulse_gain_y', num2str(config.excitation.impulse_gain_y));
+    setEditValue(fig, 'edit_impulse_gain_z', num2str(config.excitation.impulse_gain_z));
+    setEditValue(fig, 'edit_pulse_period', num2str(config.excitation.pulse_period_s));
+    setEditValue(fig, 'edit_pulse_width', num2str(config.excitation.pulse_width_percent));
+    setEditValue(fig, 'edit_pulse_delay_y', num2str(config.excitation.pulse_delay_y_s));
+    setEditValue(fig, 'edit_pulse_delay_z', num2str(config.excitation.pulse_delay_z_s));
+    
+    if isfield(config.excitation, 'start_time')
+        setEditValue(fig, 'edit_excite_start', num2str(config.excitation.start_time));
+    end
+    if isfield(config.excitation, 'end_time')
+        setEditValue(fig, 'edit_excite_end', num2str(config.excitation.end_time));
+    end
+    
+    % --- 仿真参数 ---
+    if isfield(config, 'simulation')
+        setEditValue(fig, 'edit_stopTime', num2str(config.simulation.stop_time));
+        setEditValue(fig, 'edit_fixedStep', num2str(config.simulation.fixed_step));
+    end
+end
+
+%% ==================== 设置UI控件值的辅助函数 ====================
+function setEditValue(fig, tag, value)
+    h = findobj(fig, 'Tag', tag);
+    if ~isempty(h)
+        set(h, 'String', value);
+    end
+end
+
+function setCheckValue(fig, tag, value)
+    h = findobj(fig, 'Tag', tag);
+    if ~isempty(h)
+        set(h, 'Value', value);
+    end
 end
 
 function [valid, msg] = validateConfig(config)
@@ -1036,5 +1140,83 @@ function [valid, msg] = validateConfig(config)
     if abs(sum(config.trunk.mass_distribution) - 1) > 0.01
         valid = false;
         msg = [msg '主干质量分配之和必须为1\n'];
+    end
+end
+
+%% ==================== 动态生成默认分枝参数 ====================
+function [primary, secondary, tertiary] = generateDefaultBranchParams(num_primary, secondary_count, tertiary_count)
+    % 根据拓扑配置动态生成默认的分枝几何与质量参数
+    % 这避免了硬编码特定数量的分枝
+    
+    primary = struct();
+    secondary = struct();
+    tertiary = struct();
+    
+    % 基础参数模板（可根据分枝级别缩放）
+    base_mass_p = 5.0;        % 一级分枝基础质量
+    base_length_p = 0.5;      % 一级分枝基础长度
+    base_diam_base_p = 0.045; % 一级分枝基础直径
+    base_diam_tip_p = 0.028;  % 一级分枝尖端直径
+    
+    base_mass_s = 2.0;        % 二级分枝基础质量
+    base_length_s = 0.35;     % 二级分枝基础长度
+    base_diam_base_s = 0.025; % 二级分枝基础直径
+    base_diam_tip_s = 0.015;  % 二级分枝尖端直径
+    
+    base_mass_t = 0.5;        % 三级分枝基础质量
+    base_length_t = 0.25;     % 三级分枝基础长度
+    base_diam_base_t = 0.012; % 三级分枝基础直径
+    base_diam_tip_t = 0.006;  % 三级分枝尖端直径
+    
+    default_mass_dist = [0.5, 0.3, 0.2];
+    
+    % 生成一级分枝参数
+    for p = 1:num_primary
+        branch_id = sprintf('P%d', p);
+        variation = 0.8 + 0.4 * rand();
+        primary.(branch_id) = struct(...
+            'total_mass', base_mass_p * variation, ...
+            'length', base_length_p * (0.9 + 0.2 * rand()), ...
+            'diameter_base', base_diam_base_p * variation, ...
+            'diameter_tip', base_diam_tip_p * variation, ...
+            'mass_dist', default_mass_dist);
+    end
+    
+    % 生成二级分枝参数
+    for p = 1:num_primary
+        num_s = secondary_count(p);
+        for s = 1:num_s
+            branch_id = sprintf('P%d_S%d', p, s);
+            variation = 0.7 + 0.6 * rand();
+            secondary.(branch_id) = struct(...
+                'total_mass', base_mass_s * variation, ...
+                'length', base_length_s * (0.85 + 0.3 * rand()), ...
+                'diameter_base', base_diam_base_s * variation, ...
+                'diameter_tip', base_diam_tip_s * variation, ...
+                'mass_dist', default_mass_dist);
+        end
+    end
+    
+    % 生成三级分枝参数
+    for p = 1:num_primary
+        if p <= length(tertiary_count)
+            tertiary_for_p = tertiary_count{p};
+            num_s = secondary_count(p);
+            for s = 1:num_s
+                if s <= length(tertiary_for_p)
+                    num_t = tertiary_for_p(s);
+                    for t = 1:num_t
+                        branch_id = sprintf('P%d_S%d_T%d', p, s, t);
+                        variation = 0.6 + 0.8 * rand();
+                        tertiary.(branch_id) = struct(...
+                            'total_mass', base_mass_t * variation, ...
+                            'length', base_length_t * (0.8 + 0.4 * rand()), ...
+                            'diameter_base', base_diam_base_t * variation, ...
+                            'diameter_tip', base_diam_tip_t * variation, ...
+                            'mass_dist', default_mass_dist);
+                    end
+                end
+            end
+        end
     end
 end
