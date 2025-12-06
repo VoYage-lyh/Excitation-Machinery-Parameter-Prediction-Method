@@ -90,13 +90,13 @@ simChoice = questdlg('是否立即运行仿真?', '运行仿真', ...
 if strcmp(simChoice, '是，运行仿真')
     runSimulation(sim_params);
 else
-    fprintf('  仿真参数已导出到工作区，您可以稍后手动运行仿真代码。\n');
-    fprintf('  运行前请确保以下变量存在于工作区:\n');
-    fprintf('    - sim_params: 仿真参数结构体\n');
-    fprintf('    - preConfig: 预配置结构体\n');
-    fprintf('    - identifiedParams: 识别参数（可能为空）\n\n');
+    fprintf('  仿真参数已准备就绪。\n');
+    fprintf('  运行 Build_Extended_MDOF_model 前请确保参数已正确导出。\n\n');
     
-    % 导出到工作区
+    % 【关键】调用导出函数，确保所有参数都正确导出到工作区
+    exportSimParamsToWorkspace(sim_params);
+    
+    % 额外导出这些变量供调试使用
     assignin('base', 'sim_params', sim_params);
     assignin('base', 'preConfig', preConfig);
     assignin('base', 'identifiedParams', identifiedParams);
@@ -268,25 +268,41 @@ end
 
 function exportSimParamsToWorkspace(params)
     % 将仿真参数导出到工作区
+    % 确保所有变量名与 Build 脚本期望的完全一致
     
-    % 标记使用GUI配置
+    fprintf('  正在导出参数到工作区...\n');
+    
+    % 【关键】标记使用GUI配置 - Build脚本检查此变量
     assignin('base', 'params_from_gui', true);
     
     % 基础设置
-    assignin('base', 'model_name', params.model_name);
+    if isfield(params, 'model_name')
+        assignin('base', 'model_name', params.model_name);
+    end
     assignin('base', 'gravity_g', params.gravity_g);
-    assignin('base', 'use_parallel', params.use_parallel);
+    if isfield(params, 'use_parallel')
+        assignin('base', 'use_parallel', params.use_parallel);
+    end
+    if isfield(params, 'workFolder')
+        assignin('base', 'workFolder', params.workFolder);
+    end
     
-    % 拓扑和结构参数
+    % 【关键】拓扑配置 - 变量名必须是 'config'
     assignin('base', 'config', params.config);
-    assignin('base', 'params_struct', struct('trunk', params.trunk));
+    
+    % 【关键】主干参数结构 - 变量名必须是 'params_struct'，且包含 trunk 字段
+    params_struct_export = struct();
+    params_struct_export.trunk = params.trunk;
+    assignin('base', 'params_struct', params_struct_export);
+    
+    % 【关键】分枝参数 - 变量名必须是 'predefined_params'
     assignin('base', 'predefined_params', params.predefined_params);
     
-    % 果实配置
+    % 【关键】果实配置
     assignin('base', 'fruit_config', params.fruit_config);
     assignin('base', 'default_fruit_params', params.default_fruit_params);
     
-    % 激励参数
+    % 激励参数 - 逐个导出
     assignin('base', 'excitation_type', params.excitation.type);
     assignin('base', 'F_excite_y_amplitude', params.excitation.sine_amplitude_y);
     assignin('base', 'F_excite_z_amplitude', params.excitation.sine_amplitude_z);
@@ -302,7 +318,17 @@ function exportSimParamsToWorkspace(params)
     assignin('base', 'excitation_start_time', params.excitation.start_time);
     assignin('base', 'excitation_end_time', params.excitation.end_time);
     
-    % 仿真控制
+    % 仿真控制参数
     assignin('base', 'sim_stop_time', params.sim_stop_time);
     assignin('base', 'sim_fixed_step', params.sim_fixed_step);
+    
+    fprintf('  参数导出完成。已导出的关键变量:\n');
+    fprintf('    - params_from_gui = true\n');
+    fprintf('    - config (拓扑配置: %d个一级分枝)\n', params.config.num_primary_branches);
+    fprintf('    - params_struct (含主干参数)\n');
+    fprintf('    - predefined_params (分枝参数)\n');
+    fprintf('    - fruit_config (果实配置)\n');
+    fprintf('    - default_fruit_params (默认果实参数)\n');
+    fprintf('    - 所有激励参数\n');
+    fprintf('    - sim_stop_time = %.1f s\n', params.sim_stop_time);
 end

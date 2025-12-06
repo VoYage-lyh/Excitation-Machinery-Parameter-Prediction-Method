@@ -59,7 +59,17 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     sim_params.predefined_params = buildAllBranchParams(preConfig, identifiedParams);
     
     % 果实参数
-    sim_params.fruit_config = preConfig.fruit;
+    % 构建果实配置，确保包含所有必需字段
+    sim_params.fruit_config = struct();
+    sim_params.fruit_config.attach_secondary_mid = preConfig.fruit.attach_secondary_mid;
+    sim_params.fruit_config.attach_secondary_tip = preConfig.fruit.attach_secondary_tip;
+    sim_params.fruit_config.attach_tertiary_mid = preConfig.fruit.attach_tertiary_mid;
+    sim_params.fruit_config.attach_tertiary_tip = preConfig.fruit.attach_tertiary_tip;
+    if isfield(preConfig.fruit, 'fruits_per_node')
+        sim_params.fruit_config.fruits_per_node = preConfig.fruit.fruits_per_node;
+    else
+        sim_params.fruit_config.fruits_per_node = 1;
+    end
     sim_params.default_fruit_params = buildFruitParams(preConfig, identifiedParams);
     
     % 激励参数
@@ -74,7 +84,16 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
                     sim_params.excitation.frequency_hz);
         end
     end
-    
+
+    % 验证 sim_params 包含所有必需字段
+    required_sim_fields = {'config', 'trunk', 'predefined_params', 'fruit_config', ...
+                          'default_fruit_params', 'excitation', 'sim_stop_time', 'sim_fixed_step'};
+    for i_f = 1:length(required_sim_fields)
+        if ~isfield(sim_params, required_sim_fields{i_f})
+            error('ConfigAdapter 内部错误：sim_params 缺少字段 %s', required_sim_fields{i_f});
+        end
+    end
+
     % 仿真控制
     sim_params.sim_stop_time = preConfig.simulation.stop_time;
     sim_params.sim_fixed_step = preConfig.simulation.fixed_step;
@@ -200,16 +219,6 @@ function predefined = buildAllBranchParams(preConfig, identifiedParams)
         branchLevel = determineBranchLevel(name);
         predefined.(name).branch_level = branchLevel;
         
-        % 根据挂果配置添加果实
-        attachFruit = shouldAttachFruit(name, branchLevel, preConfig.fruit);
-        if attachFruit
-            predefined.(name).fruit_at_mid = shouldAttachAtPosition(branchLevel, 'mid', preConfig.fruit);
-            predefined.(name).fruit_at_tip = shouldAttachAtPosition(branchLevel, 'tip', preConfig.fruit);
-            predefined.(name).fruit_params = buildFruitParams(preConfig, identifiedParams);
-        else
-            predefined.(name).fruit_at_mid = false;
-            predefined.(name).fruit_at_tip = false;
-        end
     end
 end
 

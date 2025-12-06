@@ -18,17 +18,66 @@ disp('=== 脚本初始化完成：已关闭图形窗口、清空工作空间和�
 disp(newline); % 增加空行，使输出更易读
 
 %% === 检测预配置参数 ===
-if evalin('base', 'exist(''params_from_gui'', ''var'')') && evalin('base', 'params_from_gui')
-    fprintf('═══════════════════════════════════════════════════════\n');
-    fprintf('检测到GUI预配置参数，使用预设值...\n');
-    fprintf('═══════════════════════════════════════════════════════\n\n');
-    use_gui_params = true;
-    
-    % 读取所有预配置参数
-    % 这些变量由 IntegratedTreeVibrationAnalysis_v2.m 导出
-else
-    use_gui_params = false;
+if ~evalin('base', 'exist(''params_from_gui'', ''var'')') || ~evalin('base', 'params_from_gui')
+    error(['错误：未检测到GUI预配置参数！\n' ...
+           '请先运行 IntegratedTreeVibrationAnalysis.m 进行预配置后再运行此脚本。\n' ...
+           '或者确保以下变量已存在于工作区：\n' ...
+           '  - params_from_gui = true\n' ...
+           '  - config (拓扑配置)\n' ...
+           '  - params_struct (含主干参数)\n' ...
+           '  - predefined_params (分枝参数)\n' ...
+           '  - fruit_config (果实配置)\n' ...
+           '  - default_fruit_params (默认果实参数)\n' ...
+           '  - 所有激励参数和仿真控制参数']);
 end
+
+fprintf('═══════════════════════════════════════════════════════\n');
+fprintf('检测到GUI预配置参数，正在加载预设值...\n');
+fprintf('═══════════════════════════════════════════════════════\n\n');
+
+required_vars = {'config', 'params_struct', 'predefined_params', 'fruit_config', ...
+                 'default_fruit_params', 'gravity_g', 'sim_stop_time', 'sim_fixed_step', ...
+                 'excitation_type', 'F_excite_y_amplitude', 'F_excite_z_amplitude', ...
+                 'excitation_frequency_hz', 'excitation_phase_y_rad', 'excitation_phase_z_rad', ...
+                 'impulse_force_gain_y', 'impulse_force_gain_z', 'pulse_period_s', ...
+                 'pulse_width_percent', 'pulse_phase_delay_y_s', 'pulse_phase_delay_z_s', ...
+                 'excitation_start_time', 'excitation_end_time'};
+
+missing_vars = {};
+for i_var = 1:length(required_vars)
+    if ~evalin('base', sprintf('exist(''%s'', ''var'')', required_vars{i_var}))
+        missing_vars{end+1} = required_vars{i_var};
+    end
+end
+
+if ~isempty(missing_vars)
+    error('缺少必需的工作区变量:\n  %s\n请先运行预配置程序。', strjoin(missing_vars, '\n  '));
+end
+
+fprintf('所有必需参数验证通过。\n\n');
+
+config = evalin('base', 'config');
+params_struct = evalin('base', 'params_struct');
+predefined_params = evalin('base', 'predefined_params');
+fruit_config = evalin('base', 'fruit_config');
+default_fruit_params = evalin('base', 'default_fruit_params');
+gravity_g = evalin('base', 'gravity_g');
+sim_stop_time = evalin('base', 'sim_stop_time');
+sim_fixed_step = evalin('base', 'sim_fixed_step');
+excitation_type = evalin('base', 'excitation_type');
+F_excite_y_amplitude = evalin('base', 'F_excite_y_amplitude');
+F_excite_z_amplitude = evalin('base', 'F_excite_z_amplitude');
+excitation_frequency_hz = evalin('base', 'excitation_frequency_hz');
+excitation_phase_y_rad = evalin('base', 'excitation_phase_y_rad');
+excitation_phase_z_rad = evalin('base', 'excitation_phase_z_rad');
+impulse_force_gain_y = evalin('base', 'impulse_force_gain_y');
+impulse_force_gain_z = evalin('base', 'impulse_force_gain_z');
+pulse_period_s = evalin('base', 'pulse_period_s');
+pulse_width_percent = evalin('base', 'pulse_width_percent');
+pulse_phase_delay_y_s = evalin('base', 'pulse_phase_delay_y_s');
+pulse_phase_delay_z_s = evalin('base', 'pulse_phase_delay_z_s');
+excitation_start_time = evalin('base', 'excitation_start_time');
+excitation_end_time = evalin('base', 'excitation_end_time');
 
 % 指定文件夹路径
 if use_gui_params && exist('workFolder', 'var') && ~isempty(workFolder)
@@ -375,112 +424,65 @@ disp(newline);
 params_struct = struct();
 params_struct.trunk = struct(); 
 
-if exist('params_struct', 'var') && isfield(params_struct, 'trunk')
-    fprintf('使用预配置+识别的主干参数\n');
-    % params_struct.trunk 已包含几何、质量和识别的刚度阻尼
-else
-    % 质量分配保持不变
-    m_A_total = 11.23;
-    m_A_root = m_A_total * 0.33;
-    m_A_mid  = m_A_total * 0.33;
-    m_A_tip  = m_A_total * 0.33;
-    
-    % 核心修改点：大幅降低主干的刚度和阻尼
-    k_A_base = 10000;  % N/m (原值约 1.1e6，降低约100倍)
-    c_A_base = 35;     % Ns/m (原值约 2.2e3，大幅降低)
-    disp(['主干基础刚度 (k_A_base) 设定为: ', num2str(k_A_base), ' N/m']);
-    disp(['主干基础阻尼 (c_A_base) 设定为: ', num2str(c_A_base), ' Ns/m']);
-    z_factor = 1;
-    
-    % 主干 - 根段 (连接到固定基座)
-    params_struct.trunk.root = struct(...
-    'm', m_A_root, ...
-    'k_y_conn_to_base', k_A_base, ... 
-    'c_y_conn_to_base', c_A_base, ...
-    'k_z_conn_to_base', k_A_base * z_factor, ...
-    'c_z_conn_to_base', c_A_base * z_factor, ...
-    'k_y_conn', k_A_base * 0.8, 'c_y_conn', c_A_base * 0.8, ...
-    'k_z_conn', k_A_base * 0.8 * z_factor, 'c_z_conn', c_A_base * 0.8 * z_factor ...
-    );
-    % 主干 - 中段
-    params_struct.trunk.mid  = struct(...
-    'm', m_A_mid, ...
-    'k_y_conn', k_A_base * 0.5, 'c_y_conn', c_A_base * 0.8, ...
-    'k_z_conn', k_A_base * 0.5 * z_factor, 'c_z_conn', c_A_base * 0.8 * z_factor ...
-    );
-    % 主干 - 尖端
-    params_struct.trunk.tip  = struct(...
-    'm', m_A_tip, ...
-    'k_y_conn', k_A_base * 0.2, 'c_y_conn', c_A_base * 0.8, ...
-    'k_z_conn', k_A_base * 0.2 * z_factor, 'c_z_conn', c_A_base * 0.8 * z_factor ...
-    );
+if ~isfield(params_struct, 'trunk') || ~isfield(params_struct.trunk, 'root')
+    error('参数错误：params_struct.trunk 不完整，请确保预配置正确提供了主干参数。');
 end
+fprintf('使用预配置的主干参数。\n');
 
 disp('主干 (Trunk) 各段参数已基于新的基础值定义。');
 disp(newline);
 
 % --- 预定义一级分枝参数 (Primary Branch Parameters) ---
-disp('开始定义一级分枝参数 (使用新的合理化估算值)...');
-if ~exist('predefined_params', 'var')
-    fprintf('警告：使用默认分枝参数（未经识别）\n');
-    predefined_params = struct();
-    predefined_params.P1 = generate_branch_segment_params(9.13, 5000, 13);
-    predefined_params.P2 = generate_branch_segment_params(6.78, 4000, 10);
-    predefined_params.P3 = generate_branch_segment_params(1.56, 3000, 5);
-    disp('一级分枝 (P1, P2, P3) 参数已定义。');
-    disp(newline);
-else
-    fprintf('使用预配置+识别的分枝参数\n');
+disp('验证一级分枝参数...');
+if ~exist('predefined_params', 'var') || isempty(predefined_params)
+    error('参数错误：predefined_params 不存在或为空，请确保预配置正确提供了分枝参数。');
 end
-
-% --- 预定义二级分枝参数 (Secondary Branch Parameters) ---
-disp('开始定义二级分枝参数...');
-% P1的分枝
-predefined_params.P1_S1 = generate_branch_segment_params(2.19, 1000, 2);
-predefined_params.P1_S2 = generate_branch_segment_params(2.79, 800, 1.5);
-% P2的分枝 (直接挂果)
-predefined_params.P2_S1 = generate_branch_segment_params(0.16, 40, 0.2);
-predefined_params.P2_S1.fruit_mid = default_fruit_params;
-predefined_params.P2_S1.fruit_tip = default_fruit_params; 
-disp('P2_S1 已配置为直接挂果。');
-% P3的分枝 (一个挂果，一个继续)
-predefined_params.P3_S1 = generate_branch_segment_params(1.97, 900, 1.8);
-predefined_params.P3_S2 = generate_branch_segment_params(1.85, 900, 1.8);
-predefined_params.P3_S2.fruit = default_fruit_params;
-disp('P3_S2 已配置为直接挂果。');
-disp('二级分枝参数已定义。');
+for p_check = 1:config.num_primary_branches
+    branch_id_check = ['P', num2str(p_check)];
+    if ~isfield(predefined_params, branch_id_check)
+        error('参数错误：未找到一级分枝 %s 的参数，请确保预配置包含所有分枝。', branch_id_check);
+    end
+end
+fprintf('使用预配置的分枝参数，共 %d 个一级分枝。\n', config.num_primary_branches);
 disp(newline);
 
-% --- 预定义三级分枝参数 (Tertiary Branch Parameters) ---
-disp('开始定义三级分枝参数 (均为末梢，直接挂果)...');
-% P1_S1的分枝
-predefined_params.P1_S1_T1 = generate_branch_segment_params(0.57, 150, 0.4);
-predefined_params.P1_S1_T1.fruit = default_fruit_params;
-% P1_S2的分枝
-predefined_params.P1_S2_T1 = generate_branch_segment_params(1.01, 200, 0.5);
-predefined_params.P1_S2_T1.fruit = default_fruit_params;
-predefined_params.P1_S2_T2 = generate_branch_segment_params(0.43, 120, 0.3);
-predefined_params.P1_S2_T2.fruit = default_fruit_params;
-% P3_S1的分枝
-predefined_params.P3_S1_T1 = generate_branch_segment_params(0.06, 50, 0.1);
-predefined_params.P3_S1_T1.fruit = default_fruit_params;
-disp('三级分枝参数已定义。');
+% --- 验证二级和三级分枝参数 ---
+disp('验证二级和三级分枝参数...');
+for p_idx_v = 1:config.num_primary_branches
+    for s_idx_v = 1:config.secondary_branches_count(p_idx_v)
+        branch_id_s_v = ['P', num2str(p_idx_v), '_S', num2str(s_idx_v)];
+        if ~isfield(predefined_params, branch_id_s_v)
+            error('参数错误：未找到二级分枝 %s 的参数。', branch_id_s_v);
+        end
+        for t_idx_v = 1:config.tertiary_branches_count{p_idx_v}(s_idx_v)
+            branch_id_t_v = [branch_id_s_v, '_T', num2str(t_idx_v)];
+            if ~isfield(predefined_params, branch_id_t_v)
+                error('参数错误：未找到三级分枝 %s 的参数。', branch_id_t_v);
+            end
+        end
+    end
+end
+disp('所有分枝参数验证通过。');
 disp(newline);
 
 disp('--- 3.1 预定义分枝参数库 (predefined_params) 构建完成 ---');
 disp(newline);
 
-% --- C. 动态填充最终的 params_struct 结构体 ---
-% 读取果实配置
-if ~exist('fruit_config', 'var')
-    % 默认配置：二级和三级分枝的mid和tip都挂果
-    fruit_config = struct();
-    fruit_config.attach_secondary_mid = true;
-    fruit_config.attach_secondary_tip = true;
-    fruit_config.attach_tertiary_mid = true;
-    fruit_config.attach_tertiary_tip = true;
-    fruit_config.fruits_per_node = 1;
+% 验证果实配置
+if ~exist('fruit_config', 'var') || isempty(fruit_config)
+    error('参数错误：fruit_config 不存在或为空，请确保预配置正确提供了果实配置。');
 end
+required_fruit_fields = {'attach_secondary_mid', 'attach_secondary_tip', ...
+                         'attach_tertiary_mid', 'attach_tertiary_tip', 'fruits_per_node'};
+for i_fc = 1:length(required_fruit_fields)
+    if ~isfield(fruit_config, required_fruit_fields{i_fc})
+        error('参数错误：fruit_config 缺少字段 %s。', required_fruit_fields{i_fc});
+    end
+end
+fprintf('果实配置: 二级[mid=%d,tip=%d] 三级[mid=%d,tip=%d]\n', ...
+        fruit_config.attach_secondary_mid, fruit_config.attach_secondary_tip, ...
+        fruit_config.attach_tertiary_mid, fruit_config.attach_tertiary_tip);
+
 params_struct.primary = cell(1, config.num_primary_branches); 
 disp('开始根据拓扑配置 (config) 和预定义参数库 (predefined_params) 填充最终的 params_struct 结构体...');
 for p_idx = 1:config.num_primary_branches 
@@ -3405,8 +3407,25 @@ function build_branch_recursively(model_base_path, ...
         end
     end 
     
-    has_fruit_on_this_branch_tip = isfield(current_branch_params, 'fruit') && ~isempty(current_branch_params.fruit);
+    % 【修复】检测果实 - 使用统一字段名 fruit_at_mid 和 fruit_at_tip
+    has_fruit_at_mid = isfield(current_branch_params, 'fruit_at_mid') && ...
+                       isstruct(current_branch_params.fruit_at_mid) && ...
+                       ~isempty(fieldnames(current_branch_params.fruit_at_mid));
+    has_fruit_at_tip = isfield(current_branch_params, 'fruit_at_tip') && ...
+                       isstruct(current_branch_params.fruit_at_tip) && ...
+                       ~isempty(fieldnames(current_branch_params.fruit_at_tip));
+    
+    % 向后兼容：如果使用旧字段名 'fruit'，映射到 fruit_at_tip
+    if ~has_fruit_at_tip && isfield(current_branch_params, 'fruit') && ...
+       isstruct(current_branch_params.fruit) && ~isempty(fieldnames(current_branch_params.fruit))
+        has_fruit_at_tip = true;
+        current_branch_params.fruit_at_tip = current_branch_params.fruit;
+    end
+    
+    has_fruit_on_this_branch_tip = has_fruit_at_tip;
+
     num_total_conn_pairs_for_tip = 1 + num_sub_branches_from_this_tip; 
+
     if has_fruit_on_this_branch_tip
         num_total_conn_pairs_for_tip = num_total_conn_pairs_for_tip + 1; 
     end
@@ -3446,7 +3465,7 @@ function build_branch_recursively(model_base_path, ...
     tip_next_available_fconn_idx = 1 + 1; 
     
     if has_fruit_on_this_branch_tip
-        fruit_parameters_for_this_tip = current_branch_params.fruit;
+        fruit_parameters_for_this_tip = current_branch_params.fruit_at_tip;
         fruit_unique_id_for_this_tip = matlab.lang.makeValidName([path_id_str_for_names, '_Fruit']);
         fruit_mass_local_name_on_tip = [fruit_unique_id_for_this_tip, '_Mass'];
         [y_ic_fruit, z_ic_fruit] = get_ic_strings(fruit_mass_local_name_on_tip); % *** 获取初始条件 ***
@@ -3802,9 +3821,20 @@ function dof_map_out = map_dofs_recursively_static(parameters)
         dof_map{end+1} = {[path_prefix '_mid_Mass'],  params.mid.m};
         dof_map{end+1} = {[path_prefix '_tip_Mass'],  params.tip.m};
 
-        % 如果有果实，添加果实质量点
-        if isfield(params, 'fruit') && ~isempty(params.fruit)
-            dof_map{end+1} = {[path_prefix '_Fruit_Mass'], params.fruit.m};
+        % 检查 fruit_at_mid 位置的果实
+        if isfield(params, 'fruit_at_mid') && isstruct(params.fruit_at_mid) && isfield(params.fruit_at_mid, 'm')
+            dof_map{end+1} = {[path_prefix, '_mid_Fruit_Mass'], params.fruit_at_mid.m};
+        end
+        
+        % 检查 fruit_at_tip 位置的果实
+        if isfield(params, 'fruit_at_tip') && isstruct(params.fruit_at_tip) && isfield(params.fruit_at_tip, 'm')
+            dof_map{end+1} = {[path_prefix, '_Fruit_Mass'], params.fruit_at_tip.m};
+        end
+        
+        % 向后兼容：检查旧字段名 'fruit'（仅当 fruit_at_tip 不存在时）
+        if ~isfield(params, 'fruit_at_tip') && isfield(params, 'fruit') && ...
+           isstruct(params.fruit) && isfield(params.fruit, 'm')
+            dof_map{end+1} = {[path_prefix, '_Fruit_Mass'], params.fruit.m};
         end
         
         % 递归处理二级子分枝 (注意: path_prefix 的构建方式)
@@ -3881,18 +3911,42 @@ function K_out = populate_K_matrix_static(dof_map, parameters)
         else
              add_spring_to_K(root_id, parent_tip_id, params.root.k_y_conn, params.root.k_z_conn);
         end
+
         add_spring_to_K(root_id, mid_id, params.root.k_y_conn, params.root.k_z_conn);
         add_spring_to_K(mid_id, tip_id, params.mid.k_y_conn, params.mid.k_z_conn);
-        if isfield(params, 'fruit') && ~isempty(params.fruit)
-            fruit_id = matlab.lang.makeValidName([path_prefix '_Fruit_Mass']);
-            add_spring_to_K(tip_id, fruit_id, params.fruit.k_pedicel_y, params.fruit.k_pedicel_z);
+
+         % 果实刚度 - fruit_at_tip
+        if isfield(params, 'fruit_at_tip') && isstruct(params.fruit_at_tip) && isfield(params.fruit_at_tip, 'k_pedicel_y')
+            fruit_id = [path_prefix, '_Fruit_Mass'];
+            if isKey(id_to_idx, fruit_id)
+                add_spring(tip_id, fruit_id, params.fruit_at_tip.k_pedicel_y, params.fruit_at_tip.k_pedicel_z);
+            end
         end
+        
+        % 果实刚度 - fruit_at_mid
+        if isfield(params, 'fruit_at_mid') && isstruct(params.fruit_at_mid) && isfield(params.fruit_at_mid, 'k_pedicel_y')
+            fruit_mid_id = [path_prefix, '_mid_Fruit_Mass'];
+            if isKey(id_to_idx, fruit_mid_id)
+                add_spring(mid_id, fruit_mid_id, params.fruit_at_mid.k_pedicel_y, params.fruit_at_mid.k_pedicel_z);
+            end
+        end
+        
+        % 向后兼容旧字段 'fruit'
+        if ~isfield(params, 'fruit_at_tip') && isfield(params, 'fruit') && ...
+           isstruct(params.fruit) && isfield(params.fruit, 'k_pedicel_y')
+            fruit_id = [path_prefix, '_Fruit_Mass'];
+            if isKey(id_to_idx, fruit_id)
+                add_spring(tip_id, fruit_id, params.fruit.k_pedicel_y, params.fruit.k_pedicel_z);
+            end
+        end
+
         if isfield(params, 'secondary_branches')
             for s_idx = 1:length(params.secondary_branches)
                 new_prefix = [path_prefix, '_S', num2str(s_idx)];
                 traverse(params.secondary_branches{s_idx}, new_prefix, tip_id);
             end
         end
+
         if isfield(params, 'tertiary_branches')
             for t_idx = 1:length(params.tertiary_branches)
                 new_prefix = [path_prefix, '_T', num2str(t_idx)];
