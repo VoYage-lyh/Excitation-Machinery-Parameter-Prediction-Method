@@ -3302,39 +3302,84 @@ function generateUpdateFiles(params)
         fprintf(fid, '\n');
     end
     
-    % --- 生成二级和三级分枝 (推导值) ---
-    % 代码2需要 P1_S1, P1_S2, P1_S1_T1 等。我们基于 P1 进行衰减生成。
-    fprintf(fid, '%% --- 二级/三级分枝参数 (基于一级分枝推导) ---\n');
+     % --- 从工作区拓扑配置动态生成二级和三级分枝参数 ---
+    fprintf(fid, '\n%% === 二级和三级分枝参数 (基于拓扑配置动态生成) ===\n');
     
-    % 辅助写入函数
-    write_sub_branch = @(name, parent_mass, parent_k, parent_c, scale) ...
-        fprintf(fid, 'predefined_params.%s = generate_branch_segment_params(%.4f, %.4f, %.4f);\n', ...
-        name, parent_mass*scale, parent_k*scale, parent_c*scale);
-
-    % 硬编码拓扑结构对应的参数生成 (需与代码2的拓扑一致)
-    % P1 子分枝
-    write_sub_branch('P1_S1', m_total_est, K_diag(1)/0.5, C_diag(1), 0.3);
-    write_sub_branch('P1_S2', m_total_est, K_diag(1)/0.5, C_diag(1), 0.25);
-    % P1_S1 子分枝
-    write_sub_branch('P1_S1_T1', m_total_est*0.3, K_diag(1)*0.3/0.5, C_diag(1)*0.3, 0.4);
-    % P1_S2 子分枝
-    write_sub_branch('P1_S2_T1', m_total_est*0.25, K_diag(1)*0.25/0.5, C_diag(1)*0.25, 0.4);
-    write_sub_branch('P1_S2_T2', m_total_est*0.25, K_diag(1)*0.25/0.5, C_diag(1)*0.25, 0.3);
+    % 获取拓扑配置
+    if ~evalin('base', 'exist(''config'', ''var'')')
+        error('ParameterGeneration:MissingData', ...
+              '工作区缺少拓扑配置(config)，请先运行预配置程序');
+    end
+    topology_config = evalin('base', 'config');
     
-    % P2 子分枝
-    write_sub_branch('P2_S1', m_total_est*0.8, K_diag(2)/0.5, C_diag(2), 0.2);
+    if ~isfield(topology_config, 'num_primary_branches') || ...
+       ~isfield(topology_config, 'secondary_branches_count') || ...
+       ~isfield(topology_config, 'tertiary_branches_count')
+        error('ParameterGeneration:InvalidConfig', ...
+              '拓扑配置不完整，缺少必要字段');
+    end
     
-    % P3 子分枝
-    write_sub_branch('P3_S1', m_total_est*0.6, K_diag(3)/0.5, C_diag(3), 0.3);
-    write_sub_branch('P3_S2', m_total_est*0.6, K_diag(3)/0.5, C_diag(3), 0.28);
-    % P3_S1 子分枝
-    write_sub_branch('P3_S1_T1', m_total_est*0.6*0.3, K_diag(3)*0.3/0.5, C_diag(3)*0.3, 0.2);
-
+    num_p = topology_config.num_primary_branches;
+    secondary_count = topology_config.secondary_branches_count;
+    tertiary_count = topology_config.tertiary_branches_count;
+    
+    fprintf(fid, '%% 拓扑: %d个一级分枝\n\n', num_p);
+    
+    % 遍历生成所有分枝参数
+    for p = 1:num_p
+        p_idx = min(p, length(M_diag));
+        k_p_base = K_diag(p_idx);
+        c_p_base = C_diag(p_idx);
+        m_p_base = M_diag(p_idx);
+        
+        if p <= length(secondary_count)
+            num_s = secondary_count(p);
+            for s = 1:num_s
+                branch_name_s = sprintf('P%d_S%d', p, s);
+                
+                % 二级分枝刚度阻尼基于一级分枝缩放
+                scale_s = 1.0 / (s + 1);  % 随序号递减
+                k_s = k_p_base * scale_s;
+                c_s = c_p_base * scale_s;
+                m_s = m_p_base * scale_s;
+                
+                fprintf(fid, 'predefined_params.%s = generate_branch_segment_params(%.6f, %.6f, %.6f);\n', ...
+                        branch_name_s, m_s, k_s, c_s);
+                fprintf(fid, 'predefined_params.%s.branch_level = 2;\n', branch_name_s);
+                
+                % 三级分枝
+                if p <= length(tertiary_count) && s <= length(tertiary_count{p})
+                    num_t = tertiary_count{p}(s);
+                    for t = 1:num_t
+                        branch_name_t = sprintf('P%d_S%d_T%d', p, s, t);
+                        
+                        scale_t = 1.0 / (t + 2);
+                        k_t = k_s * scale_t;
+                        c_t = c_s * scale_t;
+                        m_t = m_s * scale_t;
+                        
+                        fprintf(fid, 'predefined_params.%s = generate_branch_segment_params(%.6f, %.6f, %.6f);\n', ...
+                                branch_name_t, m_t, k_t, c_t);
+                        fprintf(fid, 'predefined_params.%s.branch_level = 3;\n', branch_name_t);
+                    end
+                end
+            end
+        end
+    end
+    
+    % 输出识别的递减因子
+    fprintf(fid, '\n%% === 从实验数据计算的递减因子 ===\n');
+    fprintf(fid, 'identified_taper_factors = struct();\n');
+    fprintf(fid, 'identified_taper_factors.k = [%.6f, %.6f, %.6f];\n', ...
+            linear_params.taper_factors.k(1), ...
+            linear_params.taper_factors.k(2), ...
+            linear_params.taper_factors.k(3));
+    fprintf(fid, 'identified_taper_factors.c = [%.6f, %.6f, %.6f];\n', ...
+            linear_params.taper_factors.c(1), ...
+            linear_params.taper_factors.c(2), ...
+            linear_params.taper_factors.c(3));
     fprintf(fid, '\n%% 标记参数来源\n');
-    fprintf(fid, 'use_sad_params = true;\n');
-    
-    fclose(fid);
-    fprintf('  [生成器] 参数更新脚本已生成: UpdatedTreeParameters.m (包含全拓扑定义)\n');
+    fprintf(fid, 'use_identified_params = true;\n');
 end
 
 function generateAnalysisReport(params)

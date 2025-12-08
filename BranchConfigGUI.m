@@ -118,16 +118,17 @@ function config = getDefaultConfig()
     config.basic.modelName = 'MDOF_Hierarchical_Vibration_Sim';
     config.basic.gravity_g = 9.81;
     config.basic.useParallel = true;
+    config.basic.parallel_max_workers = 4;
     
     % 信号处理参数（用于参数识别）
     config.signal.fs_target = 1000;
     config.signal.cutoff_freq = 65;
-    config.signal.filter_order = 8;
+    config.signal.filter_order = 4;
     config.signal.freq_range_min = 3;
     config.signal.freq_range_max = 50;
     config.signal.snr_threshold = 10;
     config.signal.nfft = 2048;
-    
+        
     % 拓扑结构
     config.topology.num_primary_branches = 3;
     config.topology.secondary_branches_count = [2, 1, 2];
@@ -275,6 +276,13 @@ function createBasicSettingsPanel(parent, config)
               'Units', 'normalized', 'Position', [0.02 y 0.3 0.06], ...
               'Value', config.basic.useParallel, ...
               'Tag', 'check_parallel');
+    uicontrol(panel, 'Style', 'text', 'String', '最大Worker数:', ...
+              'Units', 'normalized', 'Position', [0.02 0.4 0.2 0.1], ...
+              'HorizontalAlignment', 'left');
+    uicontrol(panel, 'Style', 'edit', ...
+              'String', num2str(config.basic.parallel_max_workers), ...
+              'Units', 'normalized', 'Position', [0.23 0.4 0.1 0.1], ...
+              'Tag', 'edit_parallel_workers');
 end
 
 %% ==================== 拓扑结构面板 ====================
@@ -844,6 +852,11 @@ function config = collectAllParameters(fig)
         config.basic.modelName = getEditValue(fig, 'edit_modelName', 'string');
         config.basic.gravity_g = getEditValue(fig, 'edit_gravity', 'double');
         config.basic.useParallel = getCheckValue(fig, 'check_parallel');
+        parallel_workers = getEditValue(fig, 'edit_parallel_workers', 'double');
+        if isnan(parallel_workers) || parallel_workers < 1
+            error('BranchConfigGUI:InvalidInput', '并行Worker数必须是大于0的整数');
+        end
+        config.basic.parallel_max_workers = round(parallel_workers);
         
         % 信号处理
         config.signal.fs_target = getEditValue(fig, 'edit_fs', 'double');

@@ -267,68 +267,120 @@ function runSimulation(sim_params)
 end
 
 function exportSimParamsToWorkspace(params)
-    % 将仿真参数导出到工作区
-    % 确保所有变量名与 Build 脚本期望的完全一致
+    % 将仿真参数导出到工作区 - 严格模式
+    % 所有参数必须存在，缺失则报错
     
-    fprintf('  正在导出参数到工作区...\n');
+    fprintf('  正在导出参数到工作区（严格模式）...\n');
     
-    % 【关键】标记使用GUI配置 - Build脚本检查此变量
+    % ========== 标记使用GUI配置 ==========
     assignin('base', 'params_from_gui', true);
     
-    % 基础设置
-    if isfield(params, 'model_name')
-        assignin('base', 'model_name', params.model_name);
+    % ========== 模型名称 ==========
+    if ~isfield(params, 'model_name') || isempty(params.model_name)
+        error('ExportParams:MissingData', '缺少模型名称(model_name)');
+    end
+    assignin('base', 'model_name', params.model_name);
+    
+    % ========== 重力加速度 ==========
+    if ~isfield(params, 'gravity_g')
+        error('ExportParams:MissingData', '缺少重力加速度(gravity_g)');
     end
     assignin('base', 'gravity_g', params.gravity_g);
-    if isfield(params, 'use_parallel')
-        assignin('base', 'use_parallel', params.use_parallel);
+    
+    % ========== 并行计算设置 ==========
+    if ~isfield(params, 'use_parallel')
+        error('ExportParams:MissingData', '缺少并行计算设置(use_parallel)');
     end
-    if isfield(params, 'workFolder')
+    assignin('base', 'use_parallel', params.use_parallel);
+    
+    if ~isfield(params, 'parallel_max_workers')
+        error('ExportParams:MissingData', '缺少并行Worker数设置(parallel_max_workers)');
+    end
+    assignin('base', 'parallel_execution_max_workers', params.parallel_max_workers);
+    
+    % ========== 工作目录 ==========
+    if isfield(params, 'workFolder') && ~isempty(params.workFolder)
         assignin('base', 'workFolder', params.workFolder);
     end
     
-    % 【关键】拓扑配置 - 变量名必须是 'config'
+    % ========== 拓扑配置 ==========
+    if ~isfield(params, 'config') || isempty(params.config)
+        error('ExportParams:MissingData', '缺少拓扑配置(config)');
+    end
     assignin('base', 'config', params.config);
     
-    % 【关键】主干参数结构 - 变量名必须是 'params_struct'，且包含 trunk 字段
+    % ========== 主干参数 ==========
+    if ~isfield(params, 'trunk') || isempty(params.trunk)
+        error('ExportParams:MissingData', '缺少主干参数(trunk)');
+    end
     params_struct_export = struct();
     params_struct_export.trunk = params.trunk;
     assignin('base', 'params_struct', params_struct_export);
     
-    % 【关键】分枝参数 - 变量名必须是 'predefined_params'
+    % ========== 分枝参数 ==========
+    if ~isfield(params, 'predefined_params') || isempty(params.predefined_params)
+        error('ExportParams:MissingData', '缺少分枝参数(predefined_params)');
+    end
     assignin('base', 'predefined_params', params.predefined_params);
     
-    % 【关键】果实配置
+    % ========== 果实配置 ==========
+    if ~isfield(params, 'fruit_config') || isempty(params.fruit_config)
+        error('ExportParams:MissingData', '缺少果实配置(fruit_config)');
+    end
     assignin('base', 'fruit_config', params.fruit_config);
+    
+    if ~isfield(params, 'default_fruit_params') || isempty(params.default_fruit_params)
+        error('ExportParams:MissingData', '缺少果实参数(default_fruit_params)');
+    end
     assignin('base', 'default_fruit_params', params.default_fruit_params);
     
-    % 激励参数 - 逐个导出
-    assignin('base', 'excitation_type', params.excitation.type);
-    assignin('base', 'F_excite_y_amplitude', params.excitation.sine_amplitude_y);
-    assignin('base', 'F_excite_z_amplitude', params.excitation.sine_amplitude_z);
-    assignin('base', 'excitation_frequency_hz', params.excitation.frequency_hz);
-    assignin('base', 'excitation_phase_y_rad', params.excitation.phase_y_rad);
-    assignin('base', 'excitation_phase_z_rad', params.excitation.phase_z_rad);
-    assignin('base', 'impulse_force_gain_y', params.excitation.impulse_gain_y);
-    assignin('base', 'impulse_force_gain_z', params.excitation.impulse_gain_z);
-    assignin('base', 'pulse_period_s', params.excitation.pulse_period_s);
-    assignin('base', 'pulse_width_percent', params.excitation.pulse_width_percent);
-    assignin('base', 'pulse_phase_delay_y_s', params.excitation.pulse_delay_y_s);
-    assignin('base', 'pulse_phase_delay_z_s', params.excitation.pulse_delay_z_s);
-    assignin('base', 'excitation_start_time', params.excitation.start_time);
-    assignin('base', 'excitation_end_time', params.excitation.end_time);
-    
-    % 仿真控制参数
+    % ========== 仿真时间参数 ==========
+    if ~isfield(params, 'sim_stop_time')
+        error('ExportParams:MissingData', '缺少仿真停止时间(sim_stop_time)');
+    end
     assignin('base', 'sim_stop_time', params.sim_stop_time);
+    
+    if ~isfield(params, 'sim_fixed_step')
+        error('ExportParams:MissingData', '缺少仿真步长(sim_fixed_step)');
+    end
     assignin('base', 'sim_fixed_step', params.sim_fixed_step);
     
-    fprintf('  参数导出完成。已导出的关键变量:\n');
-    fprintf('    - params_from_gui = true\n');
-    fprintf('    - config (拓扑配置: %d个一级分枝)\n', params.config.num_primary_branches);
-    fprintf('    - params_struct (含主干参数)\n');
-    fprintf('    - predefined_params (分枝参数)\n');
-    fprintf('    - fruit_config (果实配置)\n');
-    fprintf('    - default_fruit_params (默认果实参数)\n');
-    fprintf('    - 所有激励参数\n');
-    fprintf('    - sim_stop_time = %.1f s\n', params.sim_stop_time);
+    % ========== 激励参数 ==========
+    if ~isfield(params, 'excitation') || isempty(params.excitation)
+        error('ExportParams:MissingData', '缺少激励参数(excitation)');
+    end
+    exc = params.excitation;
+    
+    required_exc_fields = {'type', 'sine_amplitude_y', 'sine_amplitude_z', ...
+                           'frequency_hz', 'phase_y_rad', 'phase_z_rad', ...
+                           'impulse_gain_y', 'impulse_gain_z', 'pulse_period_s', ...
+                           'pulse_width_percent', 'pulse_delay_y_s', 'pulse_delay_z_s', ...
+                           'start_time', 'end_time'};
+    for i = 1:length(required_exc_fields)
+        if ~isfield(exc, required_exc_fields{i})
+            error('ExportParams:MissingData', '激励参数缺少字段: %s', required_exc_fields{i});
+        end
+    end
+    
+    assignin('base', 'excitation_type', exc.type);
+    assignin('base', 'F_excite_y_amplitude', exc.sine_amplitude_y);
+    assignin('base', 'F_excite_z_amplitude', exc.sine_amplitude_z);
+    assignin('base', 'excitation_frequency_hz', exc.frequency_hz);
+    assignin('base', 'excitation_phase_y_rad', exc.phase_y_rad);
+    assignin('base', 'excitation_phase_z_rad', exc.phase_z_rad);
+    assignin('base', 'impulse_force_gain_y', exc.impulse_gain_y);
+    assignin('base', 'impulse_force_gain_z', exc.impulse_gain_z);
+    assignin('base', 'pulse_period_s', exc.pulse_period_s);
+    assignin('base', 'pulse_width_percent', exc.pulse_width_percent);
+    assignin('base', 'pulse_phase_delay_y_s', exc.pulse_delay_y_s);
+    assignin('base', 'pulse_phase_delay_z_s', exc.pulse_delay_z_s);
+    assignin('base', 'excitation_start_time', exc.start_time);
+    assignin('base', 'excitation_end_time', exc.end_time);
+    
+    % ========== 递减因子（从识别结果） ==========
+    if isfield(params, 'taper_factors') && ~isempty(params.taper_factors)
+        assignin('base', 'identified_taper_factors', params.taper_factors);
+    end
+    
+    fprintf('  参数导出完成。\n');
 end

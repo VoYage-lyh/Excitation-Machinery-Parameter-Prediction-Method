@@ -1347,7 +1347,12 @@ simulation_metadata_store = []; % 初始化元数据存储 (将存储每次仿�
 % 定义并行执行时请求的最大worker数量。
 % 这个值可以根据系统CPU核心数、可用内存以及模型复杂度进行调整。
 % 也可以考虑从外部配置文件读取或在脚本顶部设置为可调参数。
-parallel_execution_max_workers = 4; % 示例值：最多使用4个worker
+if ~evalin('base', 'exist(''parallel_execution_max_workers'', ''var'')')
+    error('Build:MissingData', ...
+          '工作区缺少 parallel_execution_max_workers，请先运行预配置程序');
+end
+parallel_execution_max_workers = evalin('base', 'parallel_execution_max_workers');
+fprintf('并行计算最大Worker数: %d (从预配置读取)\n', parallel_execution_max_workers);
 disp(['并行执行时请求的最大worker数 (parallel_execution_max_workers) 设置为: ', num2str(parallel_execution_max_workers)]);
 
 % 检查是否有已配置的仿真任务
@@ -3351,14 +3356,34 @@ function build_branch_recursively(model_base_path, ...
     if isempty(y_ic_mid) || ~ischar(y_ic_mid), y_ic_mid = '0'; end
     if isempty(z_ic_mid) || ~ischar(z_ic_mid), z_ic_mid = '0'; end
     
-    % 检测 Mid 位置是否需要挂果
-    has_fruit_at_mid_local = isfield(current_branch_params, 'fruit_at_mid') && ...
-                             isstruct(current_branch_params.fruit_at_mid) && ...
-                             ~isempty(fieldnames(current_branch_params.fruit_at_mid));
+    % ========== 统一果实检测（Mid和Tip一起检测）==========
+    % 检测 Mid 位置是否有果实
+    has_fruit_at_mid = false;
+    if isfield(current_branch_params, 'fruit_at_mid')
+        if isstruct(current_branch_params.fruit_at_mid) && ~isempty(fieldnames(current_branch_params.fruit_at_mid))
+            has_fruit_at_mid = true;
+        end
+    end
+    
+    % 检测 Tip 位置是否有果实
+    has_fruit_at_tip = false;
+    if isfield(current_branch_params, 'fruit_at_tip')
+        if isstruct(current_branch_params.fruit_at_tip) && ~isempty(fieldnames(current_branch_params.fruit_at_tip))
+            has_fruit_at_tip = true;
+        end
+    end
+    
+    % 向后兼容：旧字段名 'fruit' 映射到 fruit_at_tip
+    if ~has_fruit_at_tip && isfield(current_branch_params, 'fruit')
+        if isstruct(current_branch_params.fruit) && ~isempty(fieldnames(current_branch_params.fruit))
+            has_fruit_at_tip = true;
+            current_branch_params.fruit_at_tip = current_branch_params.fruit;
+        end
+    end
     
     % 计算 Mid 段的连接端口数量：基础2个（来自root和去往tip）+ 果实1个（如果有）
     num_conn_pairs_for_mid = 2;
-    if has_fruit_at_mid_local
+    if has_fruit_at_mid
         num_conn_pairs_for_mid = num_conn_pairs_for_mid + 1;
     end
     
@@ -3396,7 +3421,7 @@ function build_branch_recursively(model_base_path, ...
     % --- 3.2.1 Mid 位置果实连接（新增）---
     mid_next_available_fconn_idx = 2 + 1;
     
-    if has_fruit_at_mid_local
+    if has_fruit_at_mid
         fruit_parameters_for_this_mid = current_branch_params.fruit_at_mid;
         fruit_unique_id_for_this_mid = matlab.lang.makeValidName([path_id_str_for_names, '_mid_Fruit']);
         fruit_mass_local_name_on_mid = [fruit_unique_id_for_this_mid, '_Mass'];
@@ -3545,22 +3570,6 @@ function build_branch_recursively(model_base_path, ...
         end
     end 
     
-    % 【修复】检测果实 - 使用统一字段名 fruit_at_mid 和 fruit_at_tip
-    % 检测Mid段果实 - 使用标准字段名 fruit_at_mid
-    has_fruit_at_mid = false;
-    if isfield(current_branch_params, 'fruit_at_mid')
-        if isstruct(current_branch_params.fruit_at_mid) && ~isempty(fieldnames(current_branch_params.fruit_at_mid))
-            has_fruit_at_mid = true;
-        end
-    end
-    % 检测Tip段果实 - 使用标准字段名 fruit_at_tip
-    has_fruit_at_tip = false;
-    if isfield(current_branch_params, 'fruit_at_tip')
-        if isstruct(current_branch_params.fruit_at_tip) && ~isempty(fieldnames(current_branch_params.fruit_at_tip))
-            has_fruit_at_tip = true;
-        end
-    end
-
     num_total_conn_pairs_for_tip = 1 + num_sub_branches_from_this_tip; 
 
     if has_fruit_at_tip
