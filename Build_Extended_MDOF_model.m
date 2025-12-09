@@ -404,18 +404,28 @@ disp(newline);
 predefined_params = struct();
 disp('初始化空的预定义参数库 (predefined_params)。');
 
-% --- 模板参数 (Parameter Templates) ---
-% 核心修改点：大幅降低果柄阻尼，微调刚度，使其更合理
-default_fruit_params = struct(...
-'m', 0.08, ...           % 果实质量 (kg)
-'k_pedicel_y', 8, ...    % 果柄Y方向刚度 (N/m)
-'c_pedicel_y', 0.2, ...   % 果柄Y方向阻尼 (N/(m/s)) - 大幅降低！
-'k_pedicel_z', 12, ...   % 果柄Z方向刚度 (N/m)
-'c_pedicel_z', 0.2, ...    % 果柄Z方向阻尼 (N/(m/s)) - 大幅降低！
-'F_break', 5 ...         % 断裂力阈值 (N) - 调低以便观察
-);
-disp('默认果实参数模板 (default_fruit_params) 已更新 (阻尼大幅降低)。');
 disp(default_fruit_params);
+disp(newline);
+
+% --- 模板参数 (Parameter Templates) ---
+% 检查 default_fruit_params 是否已从工作区正确加载
+if ~exist('default_fruit_params', 'var') || isempty(default_fruit_params)
+    error('Build:MissingFruitParams', ...
+          ['严重错误：变量 "default_fruit_params" 未定义或为空。\n' ...
+           '严禁使用脚本内的默认硬编码值。\n' ...
+           '请先运行 "Integratedtreevibrationanalysis.m" 进行参数配置和识别。']);
+end
+
+% 验证果实参数的必要字段是否存在
+required_fruit_fields = {'m', 'k_pedicel_y', 'c_pedicel_y', 'k_pedicel_z', 'c_pedicel_z', 'F_break'};
+missing_fields = setdiff(required_fruit_fields, fieldnames(default_fruit_params));
+if ~isempty(missing_fields)
+    error('Build:InvalidFruitParams', ...
+          '错误：传入的 "default_fruit_params" 结构体不完整，缺少以下必要字段：\n%s', ...
+          strjoin(missing_fields, ', '));
+end
+
+fprintf('  已验证果实参数：质量=%.3f kg, 断裂力=%.2f N\n', default_fruit_params.m, default_fruit_params.F_break);
 disp(newline);
 
 % --- 主干参数 (Trunk Parameters) ---

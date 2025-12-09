@@ -2529,18 +2529,17 @@ function linear_params = identifyLinearParams(segments, fs, varargin)
     %% ====== 阶段二: 物理参数模型修正 ======
     fprintf('\n    --- 阶段二: 物理参数模型修正 ---\n');
     
-    % 【修改点】质量参数：优先使用传入的参数，否则使用默认值
+    % 严格检查质量参数是否传入
     if ~isempty(mass_params) && isfield(mass_params, 'm_root')
         m_root = mass_params.m_root;
         m_mid  = mass_params.m_mid;
         m_tip  = mass_params.m_tip;
-        fprintf('    使用预配置的质量参数\n');
+        fprintf('    [√] 使用预配置的质量参数: Root=%.3f, Mid=%.3f, Tip=%.3f kg\n', m_root, m_mid, m_tip);
     else
-        % 默认值（基于实际称量）
-        m_root = 0.2;  % kg - 根部质量
-        m_mid  = 0.1;  % kg - 中部质量
-        m_tip  = 0.15; % kg - 顶部质量
-        fprintf('    使用默认质量参数\n');
+        error('Analysis:MissingMassParams', ...
+              ['错误：参数识别函数未接收到有效的质量参数 (MassParams)。\n' ...
+               '物理参数识别需要已知质量矩阵(M)才能反解刚度(K)。\n' ...
+               '请确保在 GUI 配置中正确填写了分枝质量，并通过 ConfigAdapter 传递给了此函数。']);
     end
     
     M = diag([m_root, m_mid, m_tip]);
@@ -3229,157 +3228,138 @@ end
 
 %% ============ 文件生成函数 ============
 function generateUpdateFiles(params)
+    % 生成更新参数文件 - 最终严谨版
+    % 特性：
+    % 1. 无默认值：缺失数据直接报错
+    % 2. 数据驱动：分枝参数基于实验识别的递减因子(taper_factors)生成
+    
+    % --- 1. 严格性检查 ---
+    if ~isfield(params, 'linear') || ~isfield(params.linear, 'K') || ...
+       ~isfield(params.linear, 'taper_factors')
+        error('Analysis:DataMissing', ...
+              ['严重错误：无法生成参数文件。\n' ...
+               '原因：未检测到有效的线性参数(K)或递减因子(taper_factors)。\n' ...
+               '请检查参数识别流程是否成功完成。']);
+    end
+
     fid = fopen('UpdatedTreeParameters.m', 'w');
-    if fid == -1, error('无法创建参数文件！'); end
+    if fid == -1, error('无法创建 UpdatedTreeParameters.m 文件！'); end
     
-    fprintf(fid, '%%%% 果树振动模型参数更新脚本\n');
-    fprintf(fid, '%%%% 基于 SAD 框架自动识别生成的参数\n');
-    fprintf(fid, '%%%% 生成时间: %s\n\n', datestr(now));
-    
-    % 1. 写入主干基础参数 (基于识别结果)
-    fprintf(fid, '%%======= 主干基础参数 (Identified) =======%%\n');
-    if isfield(params, 'linear') && isfield(params.linear, 'K')
-        % 假设 Trunk_root (index 1) 的刚度作为基础刚度
+    try
+        fprintf(fid, '%%%% 果树振动模型参数更新脚本 (数据驱动版)\n');
+        fprintf(fid, '%%%% 生成时间: %s\n\n', datestr(now));
+        
+        % --- 2. 写入主干参数 (直接读取) ---
         k_base_val = params.linear.K(1,1);
         c_base_val = params.linear.C(1,1);
-    else
-        k_base_val = 10000; c_base_val = 35; % 回退值
-    end
-    fprintf(fid, 'k_A_base = %.4f;  %% 主干基础刚度 (N/m)\n', k_base_val);
-    fprintf(fid, 'c_A_base = %.4f;  %% 主干基础阻尼 (Ns/m)\n', c_base_val);
-    fprintf(fid, 'z_factor = 1;     %% Z方向因子\n\n');
-    
-    % 2. 写入辅助函数 (用于生成分枝参数)
-    fprintf(fid, '%%======= 参数生成辅助函数 =======%%\n');
-    fprintf(fid, 'if ~exist(''generate_branch_segment_params'', ''file'')\n');
-    fprintf(fid, '    %% 定义一个匿名函数句柄或者局部函数逻辑供脚本使用\n');
-    fprintf(fid, '    %% 注意：这里我们预定义结构体生成逻辑\n');
-    fprintf(fid, 'end\n\n');
-    
-    % 3. 写入预定义参数结构体 (predefined_params)
-    fprintf(fid, '%%======= 拓扑参数定义 =======%%\n');
-    fprintf(fid, 'if ~exist(''predefined_params'', ''var''), predefined_params = struct(); end\n\n');
-    
-    % 获取识别出的线性参数矩阵
-    if isfield(params, 'linear') && isfield(params.linear, 'M')
+        
+        fprintf(fid, '%%======= 主干基础参数 =======%%\n');
+        fprintf(fid, 'k_A_base = %.4f;  %% 主干基础刚度 (N/m)\n', k_base_val);
+        fprintf(fid, 'c_A_base = %.4f;  %% 主干基础阻尼 (Ns/m)\n', c_base_val);
+        fprintf(fid, 'z_factor = 1;     %% Z方向因子\n\n');
+        
+        % --- 3. 写入预定义参数结构体 ---
+        fprintf(fid, '%%======= 拓扑参数定义 =======%%\n');
+        fprintf(fid, 'if ~exist(''predefined_params'', ''var''), predefined_params = struct(); end\n\n');
+        
+        % 提取识别出的基准值
         M_diag = diag(params.linear.M);
         K_diag = diag(params.linear.K);
         C_diag = diag(params.linear.C);
-    else
-        M_diag = [0.2, 0.1, 0.15]; K_diag = [5000, 4000, 3000]; C_diag = [10, 8, 5];
-    end
-    
-    % 获取非线性参数 (如果有)
-    k3_vals = [0, 0, 0]; c2_vals = [0, 0, 0];
-    if isfield(params, 'nonlinear') && isfield(params.nonlinear, 'k3_coeffs')
-        k3_vals = params.nonlinear.k3_coeffs;
-        c2_vals = params.nonlinear.c2_coeffs;
-    end
-
-    % --- 生成一级分枝 (P1, P2, P3) - 使用识别值 ---
-    % 注意：这里不再使用硬编码的 9.13kg，而是根据识别出的 M_diag 估算总质量
-    % 假设识别出的 M_root 是总质量的 50%
-    m_total_est = M_diag(1) / 0.5; 
-    
-    for i = 1:3
-        idx = min(i, length(M_diag));
-        % 基于识别刚度反推 k_base (假设 k_root = k_base * 0.5)
-        k_branch_base = K_diag(idx) / 0.5; 
-        c_branch_base = C_diag(idx); 
         
-        fprintf(fid, '%% --- P%d 参数 (基于识别) ---\n', i);
-        fprintf(fid, 'predefined_params.P%d = generate_branch_segment_params(%.4f, %.4f, %.4f);\n', ...
-            i, m_total_est * (1 - (i-1)*0.2), k_branch_base, c_branch_base);
-        
-        % 注入非线性参数 (如果识别到了)
-        if k3_vals(idx) ~= 0 || c2_vals(idx) ~= 0
-            fprintf(fid, 'predefined_params.P%d.root.k_nonlinear = %.4e;\n', i, k3_vals(idx));
-            fprintf(fid, 'predefined_params.P%d.root.c_nonlinear = %.4e;\n', i, c2_vals(idx));
-            % 简单起见，假设 mid 和 tip 也有一定的非线性，或仅 root 有
-            fprintf(fid, 'predefined_params.P%d.mid.k_nonlinear  = %.4e;\n', i, k3_vals(idx)*0.5);
-            fprintf(fid, 'predefined_params.P%d.tip.k_nonlinear  = %.4e;\n', i, k3_vals(idx)*0.2);
+        % 提取非线性参数
+        k3_vals = [0, 0, 0]; c2_vals = [0, 0, 0];
+        if isfield(params, 'nonlinear') && isfield(params.nonlinear, 'k3_coeffs')
+            k3_vals = params.nonlinear.k3_coeffs;
+            c2_vals = params.nonlinear.c2_coeffs;
         end
-        fprintf(fid, '\n');
-    end
     
-     % --- 从工作区拓扑配置动态生成二级和三级分枝参数 ---
-    fprintf(fid, '\n%% === 二级和三级分枝参数 (基于拓扑配置动态生成) ===\n');
-    
-    % 获取拓扑配置
-    if ~evalin('base', 'exist(''config'', ''var'')')
-        error('ParameterGeneration:MissingData', ...
-              '工作区缺少拓扑配置(config)，请先运行预配置程序');
-    end
-    topology_config = evalin('base', 'config');
-    
-    if ~isfield(topology_config, 'num_primary_branches') || ...
-       ~isfield(topology_config, 'secondary_branches_count') || ...
-       ~isfield(topology_config, 'tertiary_branches_count')
-        error('ParameterGeneration:InvalidConfig', ...
-              '拓扑配置不完整，缺少必要字段');
-    end
-    
-    num_p = topology_config.num_primary_branches;
-    secondary_count = topology_config.secondary_branches_count;
-    tertiary_count = topology_config.tertiary_branches_count;
-    
-    fprintf(fid, '%% 拓扑: %d个一级分枝\n\n', num_p);
-    
-    % 遍历生成所有分枝参数
-    for p = 1:num_p
-        p_idx = min(p, length(M_diag));
-        k_p_base = K_diag(p_idx);
-        c_p_base = C_diag(p_idx);
-        m_p_base = M_diag(p_idx);
+        % --- 4. 生成一级分枝 (P1, P2, P3) ---
+        m_total_est = M_diag(1) / 0.5; % 基于Root质量估算总质量
         
-        if p <= length(secondary_count)
-            num_s = secondary_count(p);
-            for s = 1:num_s
-                branch_name_s = sprintf('P%d_S%d', p, s);
+        for i = 1:3
+            idx = min(i, length(M_diag));
+            % 反推分枝的基础刚度 (移除 Root 的衰减影响，还原为"名义"刚度)
+            taper_k_root = params.linear.taper_factors.k(1); 
+            k_branch_base = K_diag(idx) / taper_k_root;
+            c_branch_base = C_diag(idx); 
+            
+            fprintf(fid, '%% --- P%d 参数 (基于识别) ---\n', i);
+            % 【关键修改】传递 identified_taper_factors 给生成函数
+            fprintf(fid, 'predefined_params.P%d = generate_branch_segment_params(%.4f, %.4f, %.4f, identified_taper_factors);\n', ...
+                i, m_total_est, k_branch_base, c_branch_base);
+            
+            % 注入非线性参数
+            if k3_vals(idx) ~= 0 || c2_vals(idx) ~= 0
+                fprintf(fid, 'predefined_params.P%d.root.k_nonlinear = %.4e;\n', i, k3_vals(idx));
+                fprintf(fid, 'predefined_params.P%d.root.c_nonlinear = %.4e;\n', i, c2_vals(idx));
+                fprintf(fid, 'predefined_params.P%d.mid.k_nonlinear  = %.4e;\n', i, k3_vals(idx)*0.5);
+                fprintf(fid, 'predefined_params.P%d.tip.k_nonlinear  = %.4e;\n', i, k3_vals(idx)*0.2);
+            end
+            fprintf(fid, '\n');
+        end
+        
+        % --- 5. 动态生成二级和三级分枝参数 ---
+        if evalin('base', 'exist(''config'', ''var'')')
+            topology_config = evalin('base', 'config');
+            num_p = topology_config.num_primary_branches;
+            
+            fprintf(fid, '%% === 二级和三级分枝参数 (基于拓扑配置动态生成) ===\n');
+            for p = 1:num_p
+                % 获取父级分枝的基准参数
+                p_idx = min(p, length(M_diag));
+                k_p_base = K_diag(p_idx);
+                c_p_base = C_diag(p_idx);
+                m_p_base = M_diag(p_idx);
                 
-                % 二级分枝刚度阻尼基于一级分枝缩放
-                scale_s = 1.0 / (s + 1);  % 随序号递减
-                k_s = k_p_base * scale_s;
-                c_s = c_p_base * scale_s;
-                m_s = m_p_base * scale_s;
-                
-                fprintf(fid, 'predefined_params.%s = generate_branch_segment_params(%.6f, %.6f, %.6f);\n', ...
-                        branch_name_s, m_s, k_s, c_s);
-                fprintf(fid, 'predefined_params.%s.branch_level = 2;\n', branch_name_s);
-                
-                % 三级分枝
-                if p <= length(tertiary_count) && s <= length(tertiary_count{p})
-                    num_t = tertiary_count{p}(s);
-                    for t = 1:num_t
-                        branch_name_t = sprintf('P%d_S%d_T%d', p, s, t);
+                % 二级分枝
+                if p <= length(topology_config.secondary_branches_count)
+                    num_s = topology_config.secondary_branches_count(p);
+                    for s = 1:num_s
+                        branch_name_s = sprintf('P%d_S%d', p, s);
                         
-                        scale_t = 1.0 / (t + 2);
-                        k_t = k_s * scale_t;
-                        c_t = c_s * scale_t;
-                        m_t = m_s * scale_t;
+                        % 【关键修改】仍然需要缩放因子来区分不同层级的大小
+                        % 但这里我们仍然传递 identified_taper_factors 来控制段间关系
+                        scale_s = 1.0 / (s + 1); 
                         
-                        fprintf(fid, 'predefined_params.%s = generate_branch_segment_params(%.6f, %.6f, %.6f);\n', ...
-                                branch_name_t, m_t, k_t, c_t);
-                        fprintf(fid, 'predefined_params.%s.branch_level = 3;\n', branch_name_t);
+                        fprintf(fid, 'predefined_params.%s = generate_branch_segment_params(%.6f, %.6f, %.6f, identified_taper_factors);\n', ...
+                                branch_name_s, m_p_base*scale_s, k_p_base*scale_s, c_p_base*scale_s);
+                        fprintf(fid, 'predefined_params.%s.branch_level = 2;\n', branch_name_s);
+                        
+                        % 三级分枝
+                        if p <= length(topology_config.tertiary_branches_count) && s <= length(topology_config.tertiary_branches_count{p})
+                            num_t = topology_config.tertiary_branches_count{p}(s);
+                            for t = 1:num_t
+                                branch_name_t = sprintf('P%d_S%d_T%d', p, s, t);
+                                scale_t = 1.0 / (t + 2);
+                                
+                                fprintf(fid, 'predefined_params.%s = generate_branch_segment_params(%.6f, %.6f, %.6f, identified_taper_factors);\n', ...
+                                        branch_name_t, m_p_base*scale_s*scale_t, k_p_base*scale_s*scale_t, c_p_base*scale_s*scale_t);
+                                fprintf(fid, 'predefined_params.%s.branch_level = 3;\n', branch_name_t);
+                            end
+                        end
                     end
                 end
             end
         end
+        
+        % --- 6. 写入递减因子 ---
+        fprintf(fid, '\n%% === 从实验数据计算的递减因子 (核心数据) ===\n');
+        fprintf(fid, 'identified_taper_factors = struct();\n');
+        fprintf(fid, 'identified_taper_factors.k = [%.6f, %.6f, %.6f];\n', ...
+                params.linear.taper_factors.k(1), params.linear.taper_factors.k(2), params.linear.taper_factors.k(3));
+        fprintf(fid, 'identified_taper_factors.c = [%.6f, %.6f, %.6f];\n', ...
+                params.linear.taper_factors.c(1), params.linear.taper_factors.c(2), params.linear.taper_factors.c(3));
+        
+        fprintf(fid, '\nuse_identified_params = true;\n');
+        
+        fclose(fid);
+        fprintf('  [√] 已生成参数文件 (UpdatedTreeParameters.m)。\n');
+        
+    catch ME
+        if exist('fid', 'var') && fid > 0, fclose(fid); end
+        rethrow(ME);
     end
-    
-    % 输出识别的递减因子
-    fprintf(fid, '\n%% === 从实验数据计算的递减因子 ===\n');
-    fprintf(fid, 'identified_taper_factors = struct();\n');
-    fprintf(fid, 'identified_taper_factors.k = [%.6f, %.6f, %.6f];\n', ...
-            linear_params.taper_factors.k(1), ...
-            linear_params.taper_factors.k(2), ...
-            linear_params.taper_factors.k(3));
-    fprintf(fid, 'identified_taper_factors.c = [%.6f, %.6f, %.6f];\n', ...
-            linear_params.taper_factors.c(1), ...
-            linear_params.taper_factors.c(2), ...
-            linear_params.taper_factors.c(3));
-    fprintf(fid, '\n%% 标记参数来源\n');
-    fprintf(fid, 'use_identified_params = true;\n');
 end
 
 function generateAnalysisReport(params)
@@ -4683,11 +4663,14 @@ function [x0, lb, ub] = estimate_initial_guess_from_modal(modal_freqs, modal_dam
             min(lb([1,3,5])), max(ub([1,3,5])), min(lb([2,4,6])), max(ub([2,4,6])));
         
     else
-        % 回退值：假设第一阶约7Hz，总质量约60g
-        fprintf('    [警告] 未找到模态频率，使用轻质分枝经验回退值\n');
-        x0 = [40, 0.05, 150, 0.25, 100, 0.2];
-        lb = [5, 0.01, 20, 0.05, 20, 0.05];
-        ub = [200, 2, 700, 2.5, 700, 2.5];
+        % 如果无法提取模态频率，直接报错，禁止瞎猜
+        error('Analysis:ModalExtractionFailed', ...
+              ['严重错误：无法从实验数据的频响函数(FRF)中提取有效的模态频率。\n' ...
+               '无法计算物理参数优化的初始猜测值(x0)。\n' ...
+               '可能原因：\n' ...
+               '1. 实验数据信噪比过低，导致 FRF 峰值不明显。\n' ...
+               '2. 频率分析范围 (freq_range) 设置不当，未覆盖共振区。\n' ...
+               '请重新检查数据标注或调整信号处理参数。']);
     end
     
     % 安全检查：确保初始值在边界内

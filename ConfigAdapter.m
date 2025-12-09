@@ -290,10 +290,19 @@ function params = generateBranchSegmentParams(branchGeom, k_base, c_base, identi
     %   c_base - 基础阻尼（从实验识别）
     %   identified_taper - 从实验识别的递减因子结构体（必须提供）
     
-    % 验证递减因子必须存在
+   % 验证递减因子必须存在且有效
     if nargin < 4 || isempty(identified_taper)
-        error('ConfigAdapter:MissingData', ...
-              '缺少递减因子(identified_taper)，必须先运行参数识别程序从实验数据计算递减因子');
+        error('ConfigAdapter:MissingTaperFactors', ...
+              ['严重错误：生成分枝参数时缺少 "identified_taper" (刚度/阻尼递减因子)。\n' ...
+               'ConfigAdapter 无法推断分枝沿长度方向的刚度变化。\n' ...
+               '请检查 analyse_chibi_data.m 是否成功识别并输出了 taper_factors。']);
+    end
+    
+    if ~isfield(identified_taper, 'k') || ~isfield(identified_taper, 'c') || ...
+       length(identified_taper.k) ~= 3 || length(identified_taper.c) ~= 3
+        error('ConfigAdapter:InvalidTaperFactors', ...
+              ['严重错误：提供的 "identified_taper" 格式不正确。\n' ...
+               '必须包含 "k" 和 "c" 字段，且每个字段必须是长度为 3 的向量 (对应 Root/Mid/Tip)。']);
     end
     
     if ~isstruct(identified_taper)
@@ -391,6 +400,17 @@ function [k_est, c_est] = estimateStiffnessDamping(branchGeom, identifiedParams,
               '缺少参数识别结果(identifiedParams)，请先运行 analyse_chibi_data_v8.m 进行参数识别');
     end
     
+    % 检查是否包含必要的线性参数和递减因子
+    if ~isfield(identifiedParams, 'linear')
+        error('ConfigAdapter:MissingLinearParams', '识别结果中缺少 "linear" 结构体。');
+    end
+    
+    if ~isfield(identifiedParams.linear, 'taper_factors')
+        error('ConfigAdapter:MissingTaperFactors', ...
+              ['识别结果中缺少 "linear.taper_factors"。\n' ...
+               '请确保你使用的是最新版的 "analyse_chibi_data.m"，它会计算并输出递减因子。']);
+    end
+
     % 首先尝试从分枝特定的识别结果获取
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, branchName)
         branch_params = identifiedParams.branches.(branchName);
@@ -436,9 +456,35 @@ function [k_est, c_est] = estimateStiffnessDamping(branchGeom, identifiedParams,
         case 2  % 二级分枝 - 使用 k_mt (Mid-Tip连接刚度)
             k_est = params_x(5);
             c_est = params_x(6);
-        case 3  % 三级分枝 - 使用缩放后的 k_mt
-            k_est = params_x(5) * 0.7;  % 三级比二级刚度小
-            c_est = params_x(6) * 0.8;
+        case 3  % 三级分枝 - 基于识别出的层级间衰减趋势进行推算
+            % 获取一级和二级分枝的特征刚度/阻尼
+            k_L1 = params_x(3); % k_rm (一级分枝特征值)
+            k_L2 = params_x(5); % k_mt (二级分枝特征值)
+    
+            c_L1 = params_x(4); % c_rm
+            c_L2 = params_x(6); % c_mt
+    
+            % 计算层级间的自然衰减率
+            % 逻辑：假设 Level 3 相对于 Level 2 的衰减比例，与 Level 2 相对于 Level 1 的比例相似
+            if k_L1 > 0
+                decay_ratio_k = k_L2 / k_L1;
+            else
+                error('ConfigAdapter:InvalidStiffness', '识别出的一级分枝刚度(k_rm)非正，无法计算衰减率。');
+            end
+    
+            if c_L1 > 0
+                decay_ratio_c = c_L2 / c_L1;
+            else
+                decay_ratio_c = 0.8; % 阻尼测量通常波动大，如果c_rm异常，给一个保守的衰减估计警告
+                warning('识别出的一级分枝阻尼(c_rm)非正，使用保守衰减率 0.8。');
+            end
+    
+            % 应用衰减率计算三级分枝参数
+            k_est = k_L2 * decay_ratio_k;
+            c_est = c_L2 * decay_ratio_c;
+    
+            fprintf('    [推算] 三级分枝 %s: 基于层级衰减率 (k_decay=%.2f, c_decay=%.2f) 计算参数\n', ...
+                    branchName, decay_ratio_k, decay_ratio_c);
     end
     
     % 验证值的有效性
