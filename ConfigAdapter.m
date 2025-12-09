@@ -107,12 +107,24 @@ function trunk = buildTrunkParams(preConfig, identifiedParams)
         error('ConfigAdapter:MissingData', '缺少线性识别参数(linear)，无法构建主干。');
     end
     
-    K = identifiedParams.linear.K; % 识别到的刚度矩阵 (3x3)
-    C = identifiedParams.linear.C; % 识别到的阻尼矩阵 (3x3)
     
     % 获取刚度递减趋势 (如果有的话，用于节点间微调，否则直接用矩阵对角元)
     % 这里假设 K 矩阵的对角元分别代表 Root, Mid, Tip 的等效刚度
+    % 刚度和阻尼查找
+    target_lin = [];
+    if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, 'Trunk')
+        target_lin = identifiedParams.branches.Trunk.linear;
+        fprintf('    主干：使用专属识别参数。\n');
+    elseif isfield(identifiedParams, 'linear')
+        target_lin = identifiedParams.linear;
+        fprintf('    主干：使用全局平均参数。\n');
+    else
+        error('ConfigAdapter:NoTrunkParams', '缺少主干参数数据。');
+    end
     
+    K = target_lin.K;
+    C = target_lin.C;
+
     % Y方向 (主振动方向)
     trunk.root.k_y_conn_to_base = K(1,1); % 根部对地
     trunk.root.c_y_conn_to_base = C(1,1);
@@ -223,19 +235,19 @@ function predefined = generatePredefinedParams(preConfig, identifiedParams)
             error('缺少分枝 %s 的几何参数', name);
         end
         geom = type_struct.(name);
-        
-        % === 修复点：在此处调用 validateBranchGeometry ===
-        % 确保几何参数（如质量分布、直径）是合法的
         validateBranchGeometry(geom, name);
         
-        % 3. 估算基准刚度 (从实验数据)
-        [k_b, c_b] = estimateStiffnessDamping(geom, identifiedParams, name);
+        % 3. 【修改点】获取基准刚度 AND 专属递减因子
+        % 此时 estimateStiffnessDamping 返回三个值
+        [k_b, c_b, specific_taper] = estimateStiffnessDamping(geom, identifiedParams, name);
         
-        % 4. 生成分段参数
-        predefined.(name) = generateBranchSegmentParams(geom, k_b, c_b, identified_taper);
+        % 4. 【修改点】使用专属递减因子生成分段参数
+        % 这样 Root, Mid, Tip 都会精确等于实验识别值
+        predefined.(name) = generateBranchSegmentParams(geom, k_b, c_b, specific_taper);
+        
         predefined.(name).branch_level = lvl;
         
-        % 5. 挂果逻辑 (统一使用 buildFruitParamsStrict)
+        % 5. 挂果逻辑 (保持不变)
         if shouldAttachFruit(name, lvl, fruitConfig)
             if shouldAttachAtPosition(lvl, 'mid', fruitConfig)
                 predefined.(name).fruit_at_mid = buildFruitParamsStrict(preConfig, identifiedParams);
@@ -386,119 +398,66 @@ end
 
 
 %% ==================== 辅助函数 ====================
-function [k_est, c_est] = estimateStiffnessDamping(branchGeom, identifiedParams, branchName)
-    % 获取分枝刚度和阻尼 - 严格模式
-    % 必须从实验识别结果获取，无数据则报错
-    % 输入:
-    %   branchGeom - 分枝几何（用于验证）
-    %   identifiedParams - 参数识别结果（必须提供）
-    %   branchName - 分枝名称（如 'P1', 'P1_S1'）
+function [k_base, c_base, branch_taper] = estimateStiffnessDamping(branchGeom, identifiedParams, branchName)
+    % 获取分枝刚度和阻尼 - 严格独立数据版 (最终精简版)
+    % 逻辑：不再根据层级去猜参数，而是直接读取该分枝专属的识别结果。
     
-    % 验证识别参数必须存在
-    if isempty(identifiedParams)
-        error('ConfigAdapter:MissingData', ...
-              '缺少参数识别结果(identifiedParams)，请先运行 analyse_chibi_data_v8.m 进行参数识别');
-    end
+    target_linear_params = [];
     
-    % 检查是否包含必要的线性参数和递减因子
-    if ~isfield(identifiedParams, 'linear')
-        error('ConfigAdapter:MissingLinearParams', '识别结果中缺少 "linear" 结构体。');
-    end
-    
-    if ~isfield(identifiedParams.linear, 'taper_factors')
-        error('ConfigAdapter:MissingTaperFactors', ...
-              ['识别结果中缺少 "linear.taper_factors"。\n' ...
-               '请确保你使用的是最新版的 "analyse_chibi_data.m"，它会计算并输出递减因子。']);
-    end
-
-    % 首先尝试从分枝特定的识别结果获取
+    % 1. 【精准匹配】查找该分枝的专属数据
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, branchName)
-        branch_params = identifiedParams.branches.(branchName);
-        
-        if ~isfield(branch_params, 'k_base') || ~isfield(branch_params, 'c_base')
-            error('ConfigAdapter:MissingData', ...
-                  '分枝 %s 的识别参数缺少 k_base 或 c_base', branchName);
+        branch_data = identifiedParams.branches.(branchName);
+        if isfield(branch_data, 'linear')
+            target_linear_params = branch_data.linear;
         end
-        
-        k_est = branch_params.k_base;
-        c_est = branch_params.c_base;
-        return;
     end
     
-    % 如果没有分枝特定参数，从全局线性参数计算
-    if ~isfield(identifiedParams, 'linear')
-        error('ConfigAdapter:MissingData', ...
-              '识别参数中缺少 linear 字段，请检查参数识别是否成功完成');
+    % 2. 【严格校验】无数据直接报错 (不进行任何回退或全局查找)
+    if isempty(target_linear_params)
+        error('ConfigAdapter:NoDataForBranch', ...
+              ['严重错误：分枝 "%s" 缺少实验数据！\n' ...
+               '程序试图查找 identifiedParams.branches.%s 但未找到。\n' ...
+               '请确保在参数识别阶段已选中该分枝的数据文件。'], ...
+               branchName, branchName);
     end
     
-    linear = identifiedParams.linear;
-    
-    % 获取识别的刚度（使用X方向，因为更可靠）
-    if ~isfield(linear, 'identified_params_x') || isempty(linear.identified_params_x)
-        error('ConfigAdapter:MissingData', ...
-              '缺少X方向识别参数(identified_params_x)，无法获取刚度值');
+    % 3. 数据完整性检查
+    if ~isfield(target_linear_params, 'K') || ~isfield(target_linear_params, 'C')
+        error('ConfigAdapter:InvalidData', '分枝 "%s" 的识别结果缺少 K 或 C 矩阵。', branchName);
     end
     
-    if length(linear.identified_params_x) < 6
-        error('ConfigAdapter:InvalidData', ...
-              'X方向识别参数不完整，需要6个值: [k_g, c_g, k_rm, c_rm, k_mt, c_mt]');
+    % 4. 提取矩阵对角元 [Root, Mid, Tip]
+    K_vals = diag(target_linear_params.K); 
+    C_vals = diag(target_linear_params.C);
+    
+    % 5. 计算基础值 (Base) 和 递减因子 (Taper)
+    % 无论是一级还是三级分枝，只要有独立数据，其物理规律都是一样的：
+    % 刚度最大值作为该分枝的基础刚度，各点比值作为形状因子。
+    
+    % --- 刚度处理 ---
+    k_base = max(K_vals);
+    if k_base <= 0
+        error('ConfigAdapter:BadData', '分枝 "%s" 的刚度识别值无效(全部<=0)。', branchName);
+    end
+    k_taper = K_vals / k_base; % 生成 [k_r/max, k_m/max, k_t/max]
+    
+    % --- 阻尼处理 ---
+    c_base = max(C_vals);
+    if c_base <= 0
+        warning('分枝 "%s" 的阻尼识别值异常，使用默认线性衰减。', branchName);
+        c_base = 0.1; 
+        c_taper = [1; 1; 1];
+    else
+        c_taper = C_vals / c_base;
     end
     
-    params_x = linear.identified_params_x;
+    % 6. 构造输出结构体
+    branch_taper = struct();
+    branch_taper.k = k_taper;
+    branch_taper.c = c_taper;
     
-    % 根据分枝级别选择对应的刚度阻尼
-    level = determineBranchLevel(branchName);
-    
-    switch level
-        case 1  % 一级分枝 - 使用 k_rm (Root-Mid连接刚度)
-            k_est = params_x(3);
-            c_est = params_x(4);
-        case 2  % 二级分枝 - 使用 k_mt (Mid-Tip连接刚度)
-            k_est = params_x(5);
-            c_est = params_x(6);
-        case 3  % 三级分枝 - 基于识别出的层级间衰减趋势进行推算
-            % 获取一级和二级分枝的特征刚度/阻尼
-            k_L1 = params_x(3); % k_rm (一级分枝特征值)
-            k_L2 = params_x(5); % k_mt (二级分枝特征值)
-    
-            c_L1 = params_x(4); % c_rm
-            c_L2 = params_x(6); % c_mt
-    
-            % 计算层级间的自然衰减率
-            % 逻辑：假设 Level 3 相对于 Level 2 的衰减比例，与 Level 2 相对于 Level 1 的比例相似
-            if k_L1 > 0
-                decay_ratio_k = k_L2 / k_L1;
-            else
-                error('ConfigAdapter:InvalidStiffness', '识别出的一级分枝刚度(k_rm)非正，无法计算衰减率。');
-            end
-    
-            if c_L1 > 0
-                decay_ratio_c = c_L2 / c_L1;
-            else
-                decay_ratio_c = 0.8; % 阻尼测量通常波动大，如果c_rm异常，给一个保守的衰减估计警告
-                warning('识别出的一级分枝阻尼(c_rm)非正，使用保守衰减率 0.8。');
-            end
-    
-            % 应用衰减率计算三级分枝参数
-            k_est = k_L2 * decay_ratio_k;
-            c_est = c_L2 * decay_ratio_c;
-    
-            fprintf('    [推算] 三级分枝 %s: 基于层级衰减率 (k_decay=%.2f, c_decay=%.2f) 计算参数\n', ...
-                    branchName, decay_ratio_k, decay_ratio_c);
-    end
-    
-    % 验证值的有效性
-    if k_est <= 0
-        error('ConfigAdapter:InvalidData', ...
-              '分枝 %s 计算的刚度为非正值(%.4f)，请检查实验数据', branchName, k_est);
-    end
-    if c_est <= 0
-        error('ConfigAdapter:InvalidData', ...
-              '分枝 %s 计算的阻尼为非正值(%.4f)，请检查实验数据', branchName, c_est);
-    end
-    
-    fprintf('    分枝 %s (level=%d): k=%.2f N/m, c=%.4f Ns/m (从实验识别)\n', ...
-            branchName, level, k_est, c_est);
+    fprintf('    分枝 %s (来源: 专属实验数据): k_base=%.2f, c_base=%.4f\n', ...
+            branchName, k_base, c_base);
 end
 
 function level = determineBranchLevel(branchName)

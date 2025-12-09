@@ -1,5 +1,4 @@
-% 
-clear; clc; close all;
+clc; close all;
 
 %% === 从预配置读取参数 ===
 if evalin('base', 'exist(''analysis_params'', ''var'')')

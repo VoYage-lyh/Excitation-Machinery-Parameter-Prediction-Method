@@ -114,48 +114,148 @@ fprintf('\n');
 
 %% ==================== 子函数 ====================
 function identifiedParams = runParameterIdentification(preConfig)
-    % 运行参数识别流程
+    % 运行参数识别流程 (全拓扑覆盖 + 可视化确认版)
     
-    fprintf('\n--- 开始参数识别流程 ---\n');
-    fprintf('  将打开参数识别代码...\n\n');
+    fprintf('\n--- 开始全拓扑参数识别流程 ---\n');
     
-    % 生成分析参数
+    % 1. 生成所有分枝的 ID 列表 (Trunk, P1, P1_S1, ...)
+    all_branch_ids = getAllBranchIDs(preConfig.topology);
+    
+    % 2. 让用户选择要处理的分枝
+    [indx, tf] = listdlg('ListString', all_branch_ids, ...
+                         'SelectionMode', 'multiple', ...
+                         'ListSize', [300, 400], ...
+                         'Name', '选择识别对象', ...
+                         'PromptString', '请选择拥有独立实验数据的分枝 (可多选):');
+    
+    if ~tf, identifiedParams = []; return; end
+    target_branches = all_branch_ids(indx);
+    
+    % 准备基础结构
+    identifiedParams = struct();
+    identifiedParams.is_multi_branch = true;
+    identifiedParams.branches = struct();
+    identifiedParams.global_linear = []; 
+    
+    % 准备分析参数
     [analysis_params, ~] = ConfigAdapter(preConfig, []);
+    assignin('base', 'analysis_params', analysis_params); 
     
-    % 将参数导出到工作区供识别代码使用
-    assignin('base', 'analysis_params', analysis_params);
-    assignin('base', 'fs_target', analysis_params.fs_target);
-    assignin('base', 'CUTOFF_FREQ', analysis_params.cutoff_freq);
-    assignin('base', 'FILTER_ORDER', analysis_params.filter_order);
-    assignin('base', 'nfft', analysis_params.nfft);
-    assignin('base', 'freq_range', analysis_params.freq_range);
-    assignin('base', 'SNR_THRESHOLD', analysis_params.snr_threshold);
+    % 用于计算全局平均值的累加器
+    temp_accum = struct('K', 0, 'C', 0, 'count', 0);
     
-    fprintf('  分析参数已设置到工作区:\n');
-    fprintf('    fs_target = %d Hz\n', analysis_params.fs_target);
-    fprintf('    CUTOFF_FREQ = %d Hz\n', analysis_params.cutoff_freq);
-    fprintf('    freq_range = [%d, %d] Hz\n', analysis_params.freq_range(1), analysis_params.freq_range(2));
-    fprintf('    SNR_THRESHOLD = %d dB\n', analysis_params.snr_threshold);
-    fprintf('\n');
+    % 3. 循环处理每一个分枝
+    for i = 1:length(target_branches)
+        branch_name = target_branches{i};
+        fprintf('\n═══════════════════════════════════════════════\n');
+        fprintf('  >>> 正在处理: %s (%d/%d) <<<\n', branch_name, i, length(target_branches));
+        fprintf('═══════════════════════════════════════════════\n');
+        
+        % 提示加载数据
+        uiwait(msgbox(sprintf('请准备好【%s】的实验数据。\n点击确定选择文件...', branch_name), '数据加载提示'));
+        
+        try
+            % 运行识别脚本 (注意：analyse_chibi_data.m 必须已去除 clear)
+            run('analyse_chibi_data.m');
+            
+            % 捕获结果
+            if evalin('base', 'exist(''identified_params'', ''var'')')
+                current_result = evalin('base', 'identified_params');
+                
+                % === 可视化确认环节 ===
+                % 此时 analyse_chibi_data 的图表仍然打开着
+                % 弹出一个模态对话框，暂停程序，直到用户点击按钮
+                btn = questdlg(sprintf('【%s】参数识别完成。\n请检查屏幕上的图表 (FRF, 相干性, 拟合曲线)。\n\n结果是否合格？', branch_name), ...
+                               '质量确认', ...
+                               '合格，保存并继续', '不合格，重试', '跳过此分枝', '合格，保存并继续');
+                
+                if strcmp(btn, '不合格，重试')
+                    fprintf('  用户选择重试当前分枝...\n');
+                    i = i - 1; % 回退索引
+                    continue;
+                elseif strcmp(btn, '跳过此分枝')
+                    fprintf('  已跳过 %s。\n', branch_name);
+                    continue;
+                elseif isempty(btn)
+                    error('用户取消流程');
+                end
+                
+                % === 保存数据 ===
+                identifiedParams.branches.(branch_name) = current_result;
+                fprintf('  [√] %s 参数已保存。\n', branch_name);
+                
+                % 累加用于全局平均
+                if isfield(current_result, 'linear') && isfield(current_result.linear, 'K')
+                    % 仅取对角线元素(Root/Mid/Tip)进行粗略平均，用于无数据分枝的回退
+                    k_diag = diag(current_result.linear.K);
+                    c_diag = diag(current_result.linear.C);
+                    % 如果是3x3矩阵才累加
+                    if length(k_diag) == 3
+                        temp_accum.K = temp_accum.K + k_diag;
+                        temp_accum.C = temp_accum.C + c_diag;
+                        temp_accum.count = temp_accum.count + 1;
+                    end
+                end
+                
+                % 关闭当前图表，准备下一个
+                close all; 
+            else
+                warning('脚本运行结束但未发现 identified_params 变量。');
+            end
+            
+        catch ME
+            errordlg(sprintf('处理 %s 时出错: %s', branch_name, ME.message), '错误');
+            return;
+        end
+    end
     
-    % 提示用户
-    msgbox(sprintf(['参数已设置到工作区。\n\n' ...
-                    '请按以下步骤操作：\n' ...
-                    '1. 运行 analyse_chibi_data_v8.m（或其修改版）\n' ...
-                    '2. 完成锤击数据选择和标注\n' ...
-                    '3. 等待参数识别完成\n' ...
-                    '4. 识别结果将保存到 .mat 文件\n\n' ...
-                    '完成后点击"加载识别结果"按钮继续。']), ...
-           '参数识别提示', 'help');
-    
-    % 等待用户完成识别
-    waitChoice = questdlg('参数识别是否已完成?', '等待识别完成', ...
-                          '已完成，加载结果', '取消', '已完成，加载结果');
-    
-    if strcmp(waitChoice, '已完成，加载结果')
-        identifiedParams = loadIdentifiedParams();
+    % 4. 生成全局回退参数 (Global Fallback)
+    if temp_accum.count > 0
+        % 构造一个对角矩阵作为平均值
+        avg_K_diag = temp_accum.K / temp_accum.count;
+        avg_C_diag = temp_accum.C / temp_accum.count;
+        
+        identifiedParams.linear = struct();
+        identifiedParams.linear.K = diag(avg_K_diag);
+        identifiedParams.linear.C = diag(avg_C_diag);
+        % 这里还可以计算 taper_factors 的平均值
+        fprintf('\n  [√] 全部分枝处理完毕。已基于 %d 组数据生成全局基准参数。\n', temp_accum.count);
     else
-        identifiedParams = [];
+        % 如果一个都没识别成功，必须报错
+        error('未获得任何有效的识别参数，无法继续。');
+    end
+    
+    % 保存总结果
+    save('IdentifiedParams_FullTopology.mat', 'identifiedParams');
+    assignin('base', 'identifiedParams', identifiedParams); % 确保留在工作区
+end
+
+% --- 辅助函数：递归生成所有分枝ID ---
+function ids = getAllBranchIDs(topo)
+    ids = {'Trunk'};
+    
+    % 一级
+    for p = 1:topo.num_primary_branches
+        p_id = sprintf('P%d', p);
+        ids{end+1} = p_id;
+        
+        % 二级
+        if p <= length(topo.secondary_branches_count)
+            num_s = topo.secondary_branches_count(p);
+            for s = 1:num_s
+                s_id = sprintf('%s_S%d', p_id, s);
+                ids{end+1} = s_id;
+                
+                % 三级
+                if p <= length(topo.tertiary_branches_count) && ...
+                   s <= length(topo.tertiary_branches_count{p})
+                    num_t = topo.tertiary_branches_count{p}(s);
+                    for t = 1:num_t
+                        ids{end+1} = sprintf('%s_T%d', s_id, t);
+                    end
+                end
+            end
+        end
     end
 end
 
