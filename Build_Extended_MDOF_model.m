@@ -10,8 +10,6 @@
 %% --- 脚本初始化 ---
 % 关闭所有已打开的图形窗口，防止干扰
 close all;
-% 清除工作空间中的所有变量，确保脚本从干净状态开始
-clear;
 % 清除命令行窗口的显示内容
 clc;
 disp('=== 脚本初始化完成：已关闭图形窗口、清空工作空间和命令行 ===');
@@ -3856,7 +3854,7 @@ function plot_tree_topology(config)
     hold on;
     
     trunk_base_coord = [0, 0];
-    trunk_length = 3; 
+    trunk_length = config.trunk.length; 
     branch_length_decay = 0.7; 
     trunk_angle = 90; 
     primary_spread_angle = 60; 
