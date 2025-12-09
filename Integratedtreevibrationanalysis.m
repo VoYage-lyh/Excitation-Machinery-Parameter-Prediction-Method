@@ -137,10 +137,7 @@ function identifiedParams = runParameterIdentification(preConfig)
     % 准备分析参数
     [analysis_params, ~] = ConfigAdapter(preConfig, []);
     assignin('base', 'analysis_params', analysis_params); 
-    
-    % 用于计算全局平均值的累加器
-    temp_accum = struct('K', 0, 'C', 0, 'count', 0);
-    
+        
     % 3. 循环处理每一个分枝
     for i = 1:length(target_branches)
         branch_name = target_branches{i};
@@ -160,18 +157,14 @@ function identifiedParams = runParameterIdentification(preConfig)
                 current_result = evalin('base', 'identified_params');
                 
                 % === 可视化确认环节 ===
-                % 此时 analyse_chibi_data 的图表仍然打开着
-                % 弹出一个模态对话框，暂停程序，直到用户点击按钮
-                btn = questdlg(sprintf('【%s】参数识别完成。\n请检查屏幕上的图表 (FRF, 相干性, 拟合曲线)。\n\n结果是否合格？', branch_name), ...
+                % 只有重试或保存，不允许跳过
+                btn = questdlg(sprintf('【%s】参数识别完成。\n请检查图表。\n结果是否合格？', branch_name), ...
                                '质量确认', ...
-                               '合格，保存并继续', '不合格，重试', '跳过此分枝', '合格，保存并继续');
+                               '合格，保存并继续', '不合格，重试', '合格，保存并继续');
                 
                 if strcmp(btn, '不合格，重试')
                     fprintf('  用户选择重试当前分枝...\n');
                     i = i - 1; % 回退索引
-                    continue;
-                elseif strcmp(btn, '跳过此分枝')
-                    fprintf('  已跳过 %s。\n', branch_name);
                     continue;
                 elseif isempty(btn)
                     error('用户取消流程');
@@ -180,20 +173,7 @@ function identifiedParams = runParameterIdentification(preConfig)
                 % === 保存数据 ===
                 identifiedParams.branches.(branch_name) = current_result;
                 fprintf('  [√] %s 参数已保存。\n', branch_name);
-                
-                % 累加用于全局平均
-                if isfield(current_result, 'linear') && isfield(current_result.linear, 'K')
-                    % 仅取对角线元素(Root/Mid/Tip)进行粗略平均，用于无数据分枝的回退
-                    k_diag = diag(current_result.linear.K);
-                    c_diag = diag(current_result.linear.C);
-                    % 如果是3x3矩阵才累加
-                    if length(k_diag) == 3
-                        temp_accum.K = temp_accum.K + k_diag;
-                        temp_accum.C = temp_accum.C + c_diag;
-                        temp_accum.count = temp_accum.count + 1;
-                    end
-                end
-                
+                                
                 % 关闭当前图表，准备下一个
                 close all; 
             else

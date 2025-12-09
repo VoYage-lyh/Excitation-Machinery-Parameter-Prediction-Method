@@ -957,7 +957,7 @@ function [raw_accel_matrix, actual_fs, time_offset] = loadSingleSensorCSV(filepa
     % [最终自动化版] 通过“总样本数/总时长”精确计算平均采样率，全自动，无弹窗。
     
     raw_accel_matrix = [];
-    actual_fs = 1000; % 初始化默认值
+    actual_fs = []; % 初始化默认值
     time_offset = 0;
     
     try
@@ -1003,6 +1003,10 @@ function [raw_accel_matrix, actual_fs, time_offset] = loadSingleSensorCSV(filepa
     catch err
         fprintf(2, '      加载传感器%d的数据序列失败: %s\n', sensor_idx, err.message);
         raw_accel_matrix = [];
+    end
+    
+    if isempty(actual_fs) || isnan(actual_fs)
+        error('LoadData:FsError', '无法从时间戳计算有效采样率 (actual_fs)，请检查CSV文件时间列格式。');
     end
 end
 
@@ -2569,8 +2573,8 @@ function linear_params = identifyLinearParams(segments, fs, varargin)
         objective_z_scalar = @(x) norm(calculate_frf_error(x, M, freq_vector, H_exp_z, Coh_z));
         identified_params_z = fmincon(objective_z_scalar, x0_z, A, b, [], [], lb, ub, [], options_con);
     else
-        fprintf('    Z方向数据不足，使用默认参数\n');
-        identified_params_z = x0_z;
+        error('SAD:InsufficientData', ...
+              'Z方向有效实验数据不足（少于5组有效段或FRF无效），无法进行物理参数辨识，\n严禁使用初始猜测值代替。请补充Z方向实验数据。');
     end
 
     fprintf('    阶段二完成。\n');
@@ -2938,7 +2942,8 @@ function error = computeObjective(x, segments, linear_params, nl_features)
                     if isfield(linear_params, 'natural_freqs_x') && ~isempty(linear_params.natural_freqs_x)
                         f0 = linear_params.natural_freqs_x(1);
                     else
-                        f0 = 10;
+                        error('SAD:MissingLinearParams', ...
+                              '无法进行非线性优化：缺少线性基准参数 (natural_freqs 或 identified_params)，\n请确保阶段一（线性识别）已成功完成。');
                     end
                     % 从identified_params_x获取刚度
                     if isfield(linear_params, 'identified_params_x') && length(linear_params.identified_params_x) >= 5
@@ -2948,13 +2953,15 @@ function error = computeObjective(x, segments, linear_params, nl_features)
                         k_values = [k_g+k_rm, k_rm+k_mt, k_mt];
                         k_linear = k_values(p);
                     else
-                        k_linear = 150;
+                        error('SAD:MissingLinearParams', ...
+                              '无法进行非线性优化：缺少线性基准参数 (natural_freqs 或 identified_params)，\n请确保阶段一（线性识别）已成功完成。');
                     end
                 else
                     if isfield(linear_params, 'natural_freqs_z') && ~isempty(linear_params.natural_freqs_z)
                         f0 = linear_params.natural_freqs_z(1);
                     else
-                        f0 = 10;
+                        error('SAD:MissingLinearParams', ...
+                              '无法进行非线性优化：缺少线性基准参数 (natural_freqs 或 identified_params)，\n请确保阶段一（线性识别）已成功完成。');
                     end
                     % 从identified_params_z获取刚度
                     if isfield(linear_params, 'identified_params_z') && length(linear_params.identified_params_z) >= 5
@@ -2964,7 +2971,8 @@ function error = computeObjective(x, segments, linear_params, nl_features)
                         k_values = [k_g+k_rm, k_rm+k_mt, k_mt];
                         k_linear = k_values(p);
                     else
-                        k_linear = 150;
+                        error('SAD:MissingLinearParams', ...
+                              '无法进行非线性优化：缺少线性基准参数 (natural_freqs 或 identified_params)，\n请确保阶段一（线性识别）已成功完成。');
                     end
                 end
                 
@@ -2988,8 +2996,6 @@ function error = computeObjective(x, segments, linear_params, nl_features)
     % 归一化误差
     if n_valid_points > 0
         error = error / n_valid_points;
-    else
-        error = 1e6;
     end
 end
 
@@ -4714,18 +4720,16 @@ function linear_params = SAD_Stage1_LinearBaselineIdentification(segments, fs)
     % 构建6x6系统矩阵 (3节点 x 2方向)
     M_global = blkdiag(M_eq, M_eq);
     
-    if isfield(linear_params, 'K_x') && isfield(linear_params, 'K_z')
+    if isfield(linear_params, 'K_x') && isfield(linear_params, 'K_z') && ...
+       ~isempty(linear_params.K_x) && ~isempty(linear_params.K_z)
         K_global = blkdiag(linear_params.K_x, linear_params.K_z);
         C_global = blkdiag(linear_params.C_x, linear_params.C_z);
-    elseif isfield(linear_params, 'K_x')
-        K_global = blkdiag(linear_params.K_x, linear_params.K_x * 0.9);
-        C_global = blkdiag(linear_params.C_x, linear_params.C_x * 0.9);
     else
-        % 使用默认值
-        K_default = diag([150, 120, 80]);
-        C_default = diag([0.3, 0.25, 0.2]);
-        K_global = blkdiag(K_default, K_default);
-        C_global = blkdiag(C_default, C_default);
+        error('SAD:IdentificationFailed', ...
+              ['线性参数识别失败：未能同时获取 X 和 Z 方向的有效刚度/阻尼矩阵。\n' ...
+               '当前状态: X方向有效=%d, Z方向有效=%d。\n' ...
+               '请检查实验数据质量或增加有效信号段。'], ...
+               isfield(linear_params, 'K_x'), isfield(linear_params, 'K_z'));
     end
     
     linear_params.M = M_global;

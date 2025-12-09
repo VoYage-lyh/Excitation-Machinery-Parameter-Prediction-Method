@@ -212,147 +212,83 @@ disp(newline);
 disp(newline);
 disp('=== 2. 开始定义激励与仿真参数 ===');
 
-% --- 检测是否使用GUI预配置参数 ---
-if evalin('base', 'exist(''params_from_gui'', ''var'')') && evalin('base', 'params_from_gui')
-    use_gui_params = true;
-    fprintf('检测到GUI预配置参数，将优先使用预设值...\n');
-else
-    use_gui_params = false;
-    fprintf('未检测到GUI预配置，使用默认参数...\n');
+% --- 1. 严格检查 GUI 预配置标志 ---
+% 核心原则：严禁回退，必须由 Integratedtreevibrationanalysis.m 启动
+if ~evalin('base', 'exist(''params_from_gui'', ''var'')') || ~evalin('base', 'params_from_gui')
+    error('BuildModel:NoGUIParams', ...
+          ['错误：未检测到 GUI 预配置参数 (params_from_gui)。\n' ...
+           '违反“严格数据驱动”原则。本系统必须通过 Integratedtreevibrationanalysis.m 启动，' ...
+           '以确保加载了正确的配置和识别参数。']);
+end
+fprintf('检测到 GUI 预配置参数，正在执行严格加载...\n');
+
+% --- 2. 定义必需变量列表 (去硬编码核心) ---
+% 格式：{变量名, 描述}
+required_vars_list = {
+    'excitation_type',          '激励类型';
+    'F_excite_y_amplitude',     'Y方向正弦幅值';
+    'F_excite_z_amplitude',     'Z方向正弦幅值';
+    'excitation_frequency_hz',  '激励频率';
+    'excitation_phase_y_rad',   'Y方向相位';
+    'excitation_phase_z_rad',   'Z方向相位';
+    'pulse_period_s',           '脉冲周期';
+    'pulse_width_percent',      '脉宽百分比';
+    'pulse_phase_delay_y_s',    'Y方向脉冲延迟';
+    'pulse_phase_delay_z_s',    'Z方向脉冲延迟';
+    'impulse_force_gain_y',     'Y方向脉冲增益';
+    'impulse_force_gain_z',     'Z方向脉冲增益';
+    'excitation_start_time',    '激励开始时间';
+    'excitation_end_time',      '激励结束时间';
+    'sim_stop_time',            '仿真停止时间';
+    'sim_fixed_step',           '仿真步长';
+    'use_parallel',             '并行计算开关'
+};
+
+% --- 3. 批量加载与验证 (合并冗余 IF 语句) ---
+for i = 1:size(required_vars_list, 1)
+    var_name = required_vars_list{i, 1};
+    var_desc = required_vars_list{i, 2};
+    
+    if evalin('base', sprintf('exist(''%s'', ''var'')', var_name))
+        % 动态将变量从 Base Workspace 加载到当前脚本工作区
+        eval([var_name ' = evalin(''base'', ''' var_name ''');']);
+    else
+        % 严禁使用默认值，缺失即报错
+        error('BuildModel:MissingParam', ...
+              '错误：工作区缺少必需参数 "%s" (%s)。\n请检查 ConfigAdapter.m 是否正确导出了该参数。', ...
+              var_name, var_desc);
+    end
 end
 
-% --- 激励类型选择 ---
-if use_gui_params && evalin('base', 'exist(''excitation_type'', ''var'')')
-    excitation_type = evalin('base', 'excitation_type');
-else
-    excitation_type = 'sine';  % 默认值
-end
-disp(['激励类型 (excitation_type): ', excitation_type]);
-
+% --- 4. 衍生参数计算与逻辑校验 ---
+% 校验激励类型
 if ~ismember(excitation_type, {'sine', 'impulse'})
-    error('无效的 excitation_type。请选择 ''sine'' 或 ''impulse''。');
+    error('BuildModel:InvalidParam', '无效的 excitation_type: %s。支持值: ''sine'', ''impulse''。', excitation_type);
 end
 
-% --- 正弦激励参数 ---
-% 幅值
-if use_gui_params && evalin('base', 'exist(''F_excite_y_amplitude'', ''var'')')
-    F_excite_y_amplitude = evalin('base', 'F_excite_y_amplitude');
-else
-    F_excite_y_amplitude = 355;  % 默认值 (N)
-end
-
-if use_gui_params && evalin('base', 'exist(''F_excite_z_amplitude'', ''var'')')
-    F_excite_z_amplitude = evalin('base', 'F_excite_z_amplitude');
-else
-    F_excite_z_amplitude = 275;  % 默认值 (N)
-end
-disp(['正弦激励幅值 - Y: ', num2str(F_excite_y_amplitude), ' N, Z: ', num2str(F_excite_z_amplitude), ' N']);
-
-% 频率
-if use_gui_params && evalin('base', 'exist(''excitation_frequency_hz'', ''var'')')
-    excitation_frequency_hz = evalin('base', 'excitation_frequency_hz');
-else
-    excitation_frequency_hz = 7;  % 默认值 (Hz)
-end
-disp(['激励频率: ', num2str(excitation_frequency_hz), ' Hz']);
-
-% 相位
-if use_gui_params && evalin('base', 'exist(''excitation_phase_y_rad'', ''var'')')
-    excitation_phase_y_rad = evalin('base', 'excitation_phase_y_rad');
-else
-    excitation_phase_y_rad = 0;  % 默认值 (rad)
-end
-
-if use_gui_params && evalin('base', 'exist(''excitation_phase_z_rad'', ''var'')')
-    excitation_phase_z_rad = evalin('base', 'excitation_phase_z_rad');
-else
-    excitation_phase_z_rad = pi / 2;  % 默认值 (rad)
-end
-
-% --- 脉冲激励参数 ---
+% 脉冲源基础幅值 (Simulink Pulse Generator 幅值通常设为1，通过后续 Gain 模块放大)
 pulse_amplitude_y = 1;
 pulse_amplitude_z = 1;
 
-if use_gui_params && evalin('base', 'exist(''pulse_period_s'', ''var'')')
-    pulse_period_s = evalin('base', 'pulse_period_s');
-else
-    pulse_period_s = 20;  % 默认值 (s)
-end
-
-if use_gui_params && evalin('base', 'exist(''pulse_width_percent'', ''var'')')
-    pulse_width_percent = evalin('base', 'pulse_width_percent');
-else
-    pulse_width_percent = 0.025;  % 默认值 (%)
-end
-
-if use_gui_params && evalin('base', 'exist(''pulse_phase_delay_y_s'', ''var'')')
-    pulse_phase_delay_y_s = evalin('base', 'pulse_phase_delay_y_s');
-else
-    pulse_phase_delay_y_s = 0;  % 默认值 (s)
-end
-
-if use_gui_params && evalin('base', 'exist(''pulse_phase_delay_z_s'', ''var'')')
-    pulse_phase_delay_z_s = evalin('base', 'pulse_phase_delay_z_s');
-else
-    pulse_phase_delay_z_s = 0;  % 默认值 (s)
-end
-
-if use_gui_params && evalin('base', 'exist(''impulse_force_gain_y'', ''var'')')
-    impulse_force_gain_y = evalin('base', 'impulse_force_gain_y');
-else
-    impulse_force_gain_y = 14500;  % 默认值 (N)
-end
-
-if use_gui_params && evalin('base', 'exist(''impulse_force_gain_z'', ''var'')')
-    impulse_force_gain_z = evalin('base', 'impulse_force_gain_z');
-else
-    impulse_force_gain_z = 15500;  % 默认值 (N)
-end
-
-disp('脉冲激励参数已配置');
-
-% --- 激励时间窗口 ---
-if use_gui_params && evalin('base', 'exist(''excitation_start_time'', ''var'')')
-    excitation_start_time = evalin('base', 'excitation_start_time');
-else
-    excitation_start_time = 5.0;  % 默认值 (s)
-end
-
-if use_gui_params && evalin('base', 'exist(''excitation_end_time'', ''var'')')
-    excitation_end_time = evalin('base', 'excitation_end_time');
-else
-    excitation_end_time = 8.0;  % 默认值 (s)
-end
-disp(['激励时间窗口: ', num2str(excitation_start_time), ' - ', num2str(excitation_end_time), ' s']);
-
-% --- 仿真控制参数 ---
-if use_gui_params && evalin('base', 'exist(''sim_stop_time'', ''var'')')
-    sim_stop_time = evalin('base', 'sim_stop_time');
-else
-    sim_stop_time = 20;  % 默认值 (s)
-end
-
-if use_gui_params && evalin('base', 'exist(''sim_fixed_step'', ''var'')')
-    sim_fixed_step = evalin('base', 'sim_fixed_step');
-else
-    sim_fixed_step = 0.001;  % 默认值 (s)
-end
-disp(['仿真停止时间: ', num2str(sim_stop_time), ' s, 步长: ', num2str(sim_fixed_step), ' s']);
-
-% --- 其他参数 ---
-excitation_target_idx_base = 0;
-excitation_type_selector_value = 1;
+% 激励类型选择器 (控制 Simulink Switch 模块: 1=Sine, 2=Impulse)
+excitation_target_idx_base = 0; % 默认初始化，后续由 SimulationInput 覆盖
 if strcmp(excitation_type, 'impulse')
     excitation_type_selector_value = 2;
-end
-
-if use_gui_params && evalin('base', 'exist(''use_parallel'', ''var'')')
-    use_parallel = evalin('base', 'use_parallel');
 else
-    use_parallel = true;  % 默认值
+    excitation_type_selector_value = 1;
 end
 
-disp('--- 2.激励与仿真参数定义完成 ---');
+% --- 5. 参数加载摘要输出 ---
+fprintf('  --------------------------------------------------\n');
+fprintf('  [参数加载成功]\n');
+fprintf('  激励模式: %s (Selector=%d)\n', excitation_type, excitation_type_selector_value);
+fprintf('  正弦参数: Amp_Y=%.1f N, Amp_Z=%.1f N, Freq=%.1f Hz\n', F_excite_y_amplitude, F_excite_z_amplitude, excitation_frequency_hz);
+fprintf('  脉冲参数: Gain_Y=%.1f, Gain_Z=%.1f\n', impulse_force_gain_y, impulse_force_gain_z);
+fprintf('  时间窗口: %.2f - %.2f s\n', excitation_start_time, excitation_end_time);
+fprintf('  仿真控制: StopTime=%.2f s, FixedStep=%.4f s, Parallel=%d\n', sim_stop_time, sim_fixed_step, use_parallel);
+fprintf('  --------------------------------------------------\n');
+
+disp('--- 2. 激励与仿真参数定义完成 ---');
 disp(newline);
 
 %% === 3. 系统拓扑与参数定义 (模块化) ===
