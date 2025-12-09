@@ -13,13 +13,12 @@
 clear; clc; close all;
 
 fprintf('╔═══════════════════════════════════════════════════════╗\n');
-fprintf('║    果树振动分析与仿真集成系统 v2.0                     ║\n');
+fprintf('║    果树振动分析与仿真集成系统                          ║\n');
 fprintf('║    (正确工作流程版本)                                  ║\n');
 fprintf('╚═══════════════════════════════════════════════════════╝\n\n');
 
 %% ===================================================================
 %% 第一步：GUI预配置
-%% ===================================================================
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 fprintf('第一步：打开预配置界面\n');
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -37,11 +36,10 @@ fprintf('[√] 预配置完成!\n\n');
 
 % 保存预配置以备后用
 save('tree_preconfig_latest.mat', 'preConfig');
-fprintf('  预配置已保存到: tree_preconfig_latest.mat\n\n');
+fprintf('  预配置已保存到: tree_preconfig_latest.mat\n');
 
 %% ===================================================================
 %% 第二步：参数识别
-%% ===================================================================
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 fprintf('第二步：参数识别\n');
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -66,7 +64,6 @@ end
 
 %% ===================================================================
 %% 第三步：生成仿真参数
-%% ===================================================================
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 fprintf('第三步：生成仿真参数\n');
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -78,33 +75,31 @@ save('simulation_params_complete.mat', 'sim_params', 'preConfig', 'identifiedPar
 fprintf('  完整仿真参数已保存到: simulation_params_complete.mat\n\n');
 
 %% ===================================================================
-%% 第四步：运行仿真（可选）
-%% ===================================================================
+%% 第四步：运行仿真
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 fprintf('第四步：运行仿真\n');
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-simChoice = questdlg('是否立即运行仿真?', '运行仿真', ...
-                     '是，运行仿真', '否，稍后手动运行', '否，稍后手动运行');
+fprintf('  正在启动自动化仿真流程...\n');
 
-if strcmp(simChoice, '是，运行仿真')
-    runSimulation(sim_params);
-else
-    fprintf('  仿真参数已准备就绪。\n');
-    fprintf('  运行 Build_Extended_MDOF_model 前请确保参数已正确导出。\n\n');
-    
-    % 【关键】调用导出函数，确保所有参数都正确导出到工作区
-    exportSimParamsToWorkspace(sim_params);
-    
-    % 额外导出这些变量供调试使用
-    assignin('base', 'sim_params', sim_params);
-    assignin('base', 'preConfig', preConfig);
+% 1. 调用自动化仿真函数
+% 注意：修改后的 runSimulation 函数内部已经包含了 exportSimParamsToWorkspace
+% 并且会在导出参数后自动调用 Build_Extended_MDOF_model.m
+runSimulation(sim_params);
+
+% 2. 确保变量驻留在工作区供调试
+% 虽然 runSimulation 已经导出了仿真参数，但这几行可以确保 preConfig 等
+% 中间变量也能在工作区找到，方便后续手动检查。
+assignin('base', 'sim_params', sim_params);
+assignin('base', 'preConfig', preConfig);
+if exist('identifiedParams', 'var')
     assignin('base', 'identifiedParams', identifiedParams);
 end
 
+fprintf('  [√] 第四步执行完毕。\n\n');
+
 %% ===================================================================
 %% 完成
-%% ===================================================================
 fprintf('╔═══════════════════════════════════════════════════════╗\n');
 fprintf('║    流程完成!                                          ║\n');
 fprintf('╚═══════════════════════════════════════════════════════╝\n\n');
@@ -117,9 +112,7 @@ if ~isempty(identifiedParams)
 end
 fprintf('\n');
 
-
 %% ==================== 子函数 ====================
-
 function identifiedParams = runParameterIdentification(preConfig)
     % 运行参数识别流程
     
@@ -127,7 +120,7 @@ function identifiedParams = runParameterIdentification(preConfig)
     fprintf('  将打开参数识别代码...\n\n');
     
     % 生成分析参数
-    [analysis_params, ~] = ConfigAdapter_v2(preConfig, []);
+    [analysis_params, ~] = ConfigAdapter(preConfig, []);
     
     % 将参数导出到工作区供识别代码使用
     assignin('base', 'analysis_params', analysis_params);
@@ -240,30 +233,45 @@ function identifiedParams = loadIdentifiedParams()
 end
 
 function runSimulation(sim_params)
-    % 运行仿真
+    % 运行仿真 - 自动化版本
     
-    fprintf('\n--- 开始仿真流程 ---\n');
+    fprintf('\n========================================\n');
+    fprintf('   进入自动化仿真构建阶段\n');
+    fprintf('========================================\n');
     
-    % 切换工作目录
+    % 1. 切换工作目录 (保持不变)
     if ~isempty(sim_params.workFolder) && exist(sim_params.workFolder, 'dir')
         cd(sim_params.workFolder);
-        fprintf('  工作目录: %s\n', sim_params.workFolder);
+        fprintf('  工作目录已切换至: %s\n', sim_params.workFolder);
     end
     
-    % 导出所有仿真参数到工作区
+    % 2. 导出所有仿真参数到工作区 (核心步骤)
+    % 这一步非常关键，它会将 config, params_struct 等变量推送到 Base Workspace
+    % Build_Extended_MDOF_model.m 将直接从 Base Workspace 读取这些变量
     exportSimParamsToWorkspace(sim_params);
     
-    fprintf('  仿真参数已导出到工作区。\n');
-    fprintf('  请运行 Build_Extended_MDOF_model 代码（或其修改版）。\n\n');
+    fprintf('  [√] 仿真参数已成功导出到工作区。\n');
+    fprintf('  正在启动模型构建与仿真脚本 (Build_Extended_MDOF_model.m)...\n\n');
     
-    % 提示
-    msgbox(sprintf(['仿真参数已准备就绪!\n\n' ...
-                    '请运行 Build_Extended_MDOF_model_best_version_v2.m\n' ...
-                    '（需要先按照修改指南进行修改）\n\n' ...
-                    '关键修改点:\n' ...
-                    '• 从工作区读取参数而非硬编码\n' ...
-                    '• 根据新的果实配置逻辑添加果实']), ...
-           '运行仿真', 'help');
+    % 3. 自动运行构建和仿真脚本 (修改点)
+    try
+        % 检查脚本是否存在
+        if exist('Build_Extended_MDOF_model.m', 'file') ~= 2
+            error('MATLAB:FileNotFound', ...
+                '未找到 "Build_Extended_MDOF_model.m" 文件，无法自动运行。');
+        end
+        
+        % === 自动执行 ===
+        run('Build_Extended_MDOF_model.m');
+        
+        fprintf('\n========================================\n');
+        fprintf('   全流程自动化执行完毕！\n');
+        fprintf('========================================\n');
+        
+    catch ME
+        errordlg(sprintf('自动运行仿真失败:\n%s', ME.message), '执行错误');
+        fprintf(2, '错误详情:\n%s\n', ME.getReport());
+    end
 end
 
 function exportSimParamsToWorkspace(params)
