@@ -1,4 +1,4 @@
-# SAD-Framework-code
+# SAD(Staged Adaptive Dynamic)-Framework-code
 ### 果树多自由度振动仿真系统：
 **一种能够综合不同分枝的振动响应和果实脱落情况判定夹持点和作业参数的计算框架**  
 * 实现：
