@@ -5837,69 +5837,153 @@ end
 %% =====================================================================
 
 function detachment_model = SAD_Stage4_DetachmentForceModeling()
-    % SAD_Stage4_DetachmentForceModeling - 果实脱落力统计标定 (手动定义版)
+    % SAD_Stage4_DetachmentForceModeling - 果实脱落力模型 (严格数据驱动版)
     %
-    % 功能：
-    %   直接定义果实脱落力的回归模型参数。
-    %   建立预测模型 F_break = f(H, P, D, S)。
+    % 核心机制：
+    %   1. 内置试验原始数据 (Raw Data Source)。
+    %   2. 实时进行多元线性回归 (OLS)，计算 beta 系数。
+    %   3. 消除“硬编码系数”，实现数据变动模型自动跟随。
     %
     % 输入：无
     % 输出：detachment_model - 包含回归系数和预测函数的结构体
     
-    fprintf('  [4.1] 建立果实脱落力预测模型 (使用手动定义参数)...\n');
+    fprintf('  [4.1] 初始化脱落力模型 (正在执行实时回归分析)...\n');
     
     detachment_model = struct();
     
     % ==========================================================
-    % 手动定义回归系数 (当前全为0，请在有了真实数据后修改此处)
+    % 1. 试验原始数据录入 (来源于 Dataset_Exp_2025_01.png)
     % ==========================================================
-    % 拟合公式: F_break = beta0 + beta1*H + beta2*P + beta3*D + beta4*S + ε
+    % 格式说明:
+    % Col 1: 长轴 (mm)
+    % Col 2: 短轴 (mm)
+    % Col 3: 质量 (g) - (注：本模型暂未使用质量，但保留供后续拓展)
+    % Col 4: 脱落力 F (N) -> [目标变量 Y]
+    % Col 5: 开裂 (1/0)   -> [自变量 X4]
+    % Col 6: 冠层高度 (mm)-> [自变量 X1]
+    % Col 7: 相对位置 (1=根部, 2=中段, 3=末端) -> 需转换为 0/0.5/1.0
     
-    detachment_model.beta0 = 0;    % 截距项 (N)
-    detachment_model.beta1 = 0;    % H_crown系数 (N/m) - 冠层高度
-    detachment_model.beta2 = 0;    % P_rel系数 (N) - 相对位置 (0~1)
-    detachment_model.beta3 = 0;    % D_fruit系数 (N/cm) - 果实直径
-    detachment_model.beta4 = 0;    % S_crack系数 (N) - 开裂状态 (0/1)
+    % 人工转录的20组试验数据
+    raw_data = [ ...
+        54, 43, 46.92, 33.7, 1, 1480, 2;  % 序号1, 中段
+        38, 30, 16.30, 19.9, 0, 1640, 2;  % 序号2, 中段
+        37, 25, 13.12,  6.5, 0, 1920, 3;  % 序号3, 末端
+        41, 29, 17.06,  8.9, 0, 1840, 3;  % 序号4, 末端
+        49, 36, 33.23, 27.1, 1, 1530, 2;  % 序号5, 中段
+        48, 34, 26.75, 13.3, 1, 1720, 3;  % 序号6, 末端
+        47, 31, 21.84, 34.9, 1, 1420, 1;  % 序号7, 根部
+        45, 37, 27.97, 34.6, 1, 1450, 2;  % 序号8, 中段
+        40, 35, 24.02, 15.6, 0, 1690, 2;  % 序号9, 中段
+        46, 34, 32.66, 49.3, 0, 1350, 1;  % 序号10, 根部
+        48, 38, 31.63,  6.9, 1, 1880, 3;  % 序号11, 末端
+        38, 33, 20.93,  5.7, 1, 1960, 3;  % 序号12, 末端
+        47, 34, 26.70, 32.3, 1, 1510, 1;  % 序号13, 根部
+        42, 35, 29.76, 20.9, 0, 1610, 2;  % 序号14, 中段
+        47, 37, 35.07, 11.7, 1, 1760, 3;  % 序号15, 末端
+        42, 31, 21.65, 24.2, 1, 1560, 2;  % 序号16, 中段
+        43, 37, 30.31, 10.6, 0, 1810, 3;  % 序号17, 末端
+        40, 32, 15.83, 10.7, 1, 1780, 3;  % 序号18, 末端
+        41, 30, 15.29, 19.9, 1, 1630, 2;  % 序号19, 中段
+        34, 32, 21.07, 18.2, 1, 1670, 3   % 序号20, 末端
+    ];
+
+    % ==========================================================
+    % 2. 数据预处理 (Data Cleaning & Feature Engineering)
+    % ==========================================================
     
-    detachment_model.sigma_epsilon = 0; % 残差标准差 (N)
+    % Y: 脱落力
+    Y_target = raw_data(:, 4);
     
-    % 统计信息 (可选，占位)
-    detachment_model.R_squared = 0;
-    detachment_model.p_value = 0;
+    % X1: 冠层高度 (mm -> m)
+    H_vec = raw_data(:, 6) / 1000;
+    
+    % X2: 相对位置 (Mapping: 1->0, 2->0.5, 3->1.0)
+    % 1=根部, 2=中段, 3=末端
+    pos_map = [0; 0.5; 1.0]; 
+    P_indices = raw_data(:, 7);
+    P_vec = pos_map(P_indices);
+    
+    % X3: 果实平均直径 (mm -> cm)
+    % D = (长轴 + 短轴) / 2 / 10
+    D_vec = (raw_data(:, 1) + raw_data(:, 2)) / 2 / 10;
+    
+    % X4: 开裂状态 (0/1)
+    S_vec = raw_data(:, 5);
+    
+    % 构建回归矩阵 X (包含截距项列)
+    % [1, H, P, D, S]
+    n_samples = length(Y_target);
+    X_matrix = [ones(n_samples, 1), H_vec, P_vec, D_vec, S_vec];
     
     % ==========================================================
-    % 定义预测函数 (逻辑保持不变)
+    % 3. 执行回归分析 (Real-time Calculation)
     % ==========================================================
     
-    % --- 定义单点预测函数 ---
-    % 输入: H(冠层高度), P(相对位置), D(果径), S(开裂状态 0/1)
+    % 使用 regress 函数计算系数
+    [beta_coeffs, bint, r, rint, stats] = regress(Y_target, X_matrix);
+    
+    % 提取系数
+    detachment_model.beta0 = beta_coeffs(1); % Const
+    detachment_model.beta1 = beta_coeffs(2); % H
+    detachment_model.beta2 = beta_coeffs(3); % P
+    detachment_model.beta3 = beta_coeffs(4); % D
+    detachment_model.beta4 = beta_coeffs(5); % S
+    
+    % 统计指标
+    detachment_model.R_squared = stats(1);
+    detachment_model.F_stat = stats(2);
+    detachment_model.p_value = stats(3);
+    detachment_model.sigma_epsilon = sqrt(stats(4)); % 误差方差的平方根
+    
+    % ==========================================================
+    % 4. 定义预测接口
+    % ==========================================================
+    
     detachment_model.predict = @(H, P, D, S) ...
         detachment_model.beta0 + ...
         detachment_model.beta1 * H + ...
         detachment_model.beta2 * P + ...
         detachment_model.beta3 * D + ...
-        detachment_model.beta4 * S + ...
-        detachment_model.sigma_epsilon * randn();
-    
-    % --- 定义批量预测函数 (用于仿真初始化) ---
-    % 输入可以是向量，n为生成的样本数
+        detachment_model.beta4 * S;
+
+    % 批量预测 (带噪声模拟)
     detachment_model.batch_predict = @(H, P, D, S, n) ...
-        detachment_model.beta0 + ...
-        detachment_model.beta1 * H(:) + ...
-        detachment_model.beta2 * P(:) + ...
-        detachment_model.beta3 * D(:) + ...
-        detachment_model.beta4 * S(:) + ...
-        detachment_model.sigma_epsilon * randn(max(n, numel(H)), 1);
-    
-    % 日志输出
-    fprintf('    [√] 模型参数已初始化 (当前均为 0，请后续修改)\n');
-    fprintf('        公式: F = %.2f + %.2f*H + %.2f*P + %.2f*D + %.2f*S\n', ...
-            detachment_model.beta0, detachment_model.beta1, detachment_model.beta2, ...
-            detachment_model.beta3, detachment_model.beta4);
-    
-    fprintf('  [√] 阶段四完成\n');
+        batch_predict_internal(detachment_model, H, P, D, S, n);
+
+    % 日志输出 (显示真实计算出的值)
+    fprintf('    [√] 回归分析完成 (N=%d)\n', n_samples);
+    fprintf('        公式: F = %.2f + (%.2f)*H + (%.2f)*P + (%.2f)*D + (%.2f)*S\n', ...
+            beta_coeffs(1), beta_coeffs(2), beta_coeffs(3), beta_coeffs(4), beta_coeffs(5));
+    fprintf('        统计: R²=%.4f, P-value=%.2e, Sigma=%.3f\n', ...
+            stats(1), stats(3), detachment_model.sigma_epsilon);
+            
+    if stats(1) < 0.5
+        warning('SAD:LowFitting', '模型拟合度 R² 过低 (%.2f)，请检查试验数据质量！', stats(1));
+    end
 end
 
+% ----------------------------------------------------------
+% 内部函数：批量预测
+% ----------------------------------------------------------
+function F = batch_predict_internal(model, H, P, D, S, n)
+    % 严格数据驱动：维度检查
+    if numel(H) ~= numel(P) || numel(H) ~= numel(D)
+        error('SAD:DimMismatch', '分枝数据维度必须严格一一对应 (One-to-One Mapping)！');
+    end
+
+    % 确定性部分
+    F_mean = model.beta0 + ...
+             model.beta1 * H(:) + ...
+             model.beta2 * P(:) + ...
+             model.beta3 * D(:) + ...
+             model.beta4 * S(:);
+             
+    % 随机性部分 (基于回归残差分布)
+    noise = model.sigma_epsilon * randn(max(n, numel(H)), 1);
+    
+    F = F_mean + noise;
+    F(F < 0) = 0; % 物理约束
+end
 
 %% =====================================================================
 %% 【新增】构建全局矩阵
