@@ -12,6 +12,7 @@
 close all;
 % 清除命令行窗口的显示内容
 clc;
+clear global;
 disp('=== 脚本初始化完成：已关闭图形窗口、清空工作空间和命令行 ===');
 disp(newline); % 增加空行，使输出更易读
 
@@ -4494,50 +4495,74 @@ end
 %% =====================================================================
 
 function points = defineCandidateExcitationPoints(tree_topology)
-    % 定义候选激振点集合 Ω_exc
-    %
-    % 根据V3手稿:
-    % "考虑到实际机械作业中夹持机构的可达性与操作稳定性,
-    %  该集合主要涵盖所有一级分枝节点(包括Root、Mid和Tip节点)"
+    % 动态遍历拓扑结构生成所有候选激振点
+    % 输入: tree_topology (来自 config.topology)
+    % 输出: points (结构体元胞数组)
     
     points = {};
-    point_idx = 1;
+    idx = 1;
     
-    % 主干节点 (通常作为参考)
-    for node_type = {'root', 'mid', 'tip'}
-        point = struct();
-        point.id = sprintf('Trunk_%s', node_type{1});
-        point.branch_level = 0;
-        point.node_type = node_type{1};
-        point.position = [0, 0, 0];  % 需要根据拓扑填充
-        point.is_accessible = true;
+    % 辅助函数：添加一个节点到列表
+    function add_point(id_str, b_level, b_idx, n_type)
+        points{idx}.id = id_str;
+        points{idx}.branch_level = b_level;
+        points{idx}.branch_idx = b_idx; % 这里可以存更详细的索引向量
+        points{idx}.node_type = n_type;
+        points{idx}.is_accessible = true; % 默认假设所有节点可达，后续可按需过滤
+        idx = idx + 1;
+    end
+
+    % --- 1. 主干 (Trunk) ---
+    % 主干总是存在的
+    for node = {'root', 'mid', 'tip'}
+        add_point(['Trunk_', node{1}], 0, 0, node{1});
+    end
+    
+    % --- 2. 一级分枝 (Primary) ---
+    num_p = tree_topology.num_primary_branches;
+    for p = 1:num_p
+        % 构建 ID 前缀，例如 P1
+        p_prefix = sprintf('P%d', p);
         
-        points{point_idx} = point;
-        point_idx = point_idx + 1;
-    end
-    
-    % 一级分枝节点
-    if isfield(tree_topology, 'primary_branches')
-        n_primary = length(tree_topology.primary_branches);
-    else
-        n_primary = 3;  % 默认
-    end
-    
-    for p = 1:n_primary
-        for node_type = {'root', 'mid', 'tip'}
-            point = struct();
-            point.id = sprintf('P%d_%s', p, node_type{1});
-            point.branch_level = 1;
-            point.branch_idx = p;
-            point.node_type = node_type{1};
-            point.is_accessible = true;
-            
-            points{point_idx} = point;
-            point_idx = point_idx + 1;
+        % 添加该分枝的三个节点
+        for node = {'root', 'mid', 'tip'}
+            add_point([p_prefix, '_', node{1}], 1, p, node{1});
+        end
+        
+        % --- 3. 二级分枝 (Secondary) ---
+        % 检查是否存在二级分枝配置
+        if p <= length(tree_topology.secondary_branches_count)
+            num_s = tree_topology.secondary_branches_count(p);
+            for s = 1:num_s
+                s_prefix = sprintf('%s_S%d', p_prefix, s);
+                
+                for node = {'root', 'mid', 'tip'}
+                    add_point([s_prefix, '_', node{1}], 2, [p, s], node{1});
+                end
+                
+                % --- 4. 三级分枝 (Tertiary) ---
+                % 检查是否存在三级分枝配置
+                % 注意：tertiary_branches_count 是个 cell array，结构可能较复杂
+                if p <= length(tree_topology.tertiary_branches_count)
+                    tertiary_p = tree_topology.tertiary_branches_count{p};
+                    % 检查 tertiary_p 是否足够长以包含 s
+                    if s <= length(tertiary_p)
+                        num_t = tertiary_p(s);
+                        for t = 1:num_t
+                            t_prefix = sprintf('%s_T%d', s_prefix, t);
+                            
+                            for node = {'root', 'mid', 'tip'}
+                                add_point([t_prefix, '_', node{1}], 3, [p, s, t], node{1});
+                            end
+                        end
+                    end
+                end
+            end
         end
     end
+    
+    fprintf('  [自动生成] 共生成 %d 个候选激振点 (覆盖所有层级)。\n', length(points));
 end
-
 
 %% =====================================================================
 %% 【新增】运行激振仿真

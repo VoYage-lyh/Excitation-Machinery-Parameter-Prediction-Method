@@ -34,9 +34,10 @@ end
 
 fprintf('[√] 预配置完成!\n\n');
 
-% 保存预配置以备后用
-save('tree_preconfig_latest.mat', 'preConfig');
-fprintf('  预配置已保存到: tree_preconfig_latest.mat\n');
+% 使用项目名称生成文件名
+fname_config = sprintf('%s_PreConfig.mat', preConfig.basic.projectName);
+save(fname_config, 'preConfig');
+fprintf('  预配置已保存到: %s\n', fname_config);
 
 %% ===================================================================
 %% 第二步：参数识别
@@ -70,7 +71,8 @@ fprintf('━━━━━━━━━━━━━━━━━━━━━━━�
 [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedParams);
 
 % 保存完整仿真参数
-save('simulation_params_complete.mat', 'sim_params', 'preConfig', 'identifiedParams');
+fname_sim = sprintf('%s_SimParams.mat', preConfig.basic.projectName);
+save(fname_sim, 'sim_params', 'preConfig', 'identifiedParams');
 fprintf('  完整仿真参数已保存到: simulation_params_complete.mat\n\n');
 
 %% ===================================================================
@@ -113,20 +115,32 @@ fprintf('\n');
 
 %% ==================== 子函数 ====================
 function identifiedParams = runParameterIdentification(preConfig)
-    % 运行参数识别流程 (全拓扑覆盖 + 可视化确认版)
+    % runParameterIdentification - 全拓扑参数识别流程 (严格数据驱动 + 自动化闭环版)
+    %
+    % 功能：
+    %   1. 遍历拓扑结构中的每一个物理分枝 (P1, P1_S1...)。
+    %   2. 强制用户为每个分枝明确指定实验数据文件 (Root/Mid/Tip/Force)。
+    %   3. 自动调用 analyse_chibi_data.m 进行参数识别。
+    %   4. 捕获识别结果并组装成统一的 identifiedParams 结构体。
+    %
+    % 输入：
+    %   preConfig - 预配置结构体 (包含 topology 和 basic 信息)
+    %
+    % 输出：
+    %   identifiedParams - 识别完成的参数大结构体
     
-    fprintf('\n--- 开始全拓扑参数识别流程 ---\n');
+    fprintf('\n========================================\n');
+    fprintf('   全拓扑参数识别流程 (严格数据驱动)\n');
+    fprintf('========================================\n');
     
-    % 1. 生成所有分枝的 ID 列表 (Trunk, P1, P1_S1, ...)
+    % 1. 生成所有分枝的 ID 列表
     all_branch_ids = getAllBranchIDs(preConfig.topology);
     
-    % 2. 强制用户必须选择所有分枝，或者程序自动遍历所有分枝
-    fprintf('注意：根据严格数据驱动原则，必须为拓扑中的每一个分枝提供实验数据。\n');
-    indx = 1:length(all_branch_ids); % 强制全选
-    target_branches = all_branch_ids;
-        
-    if ~tf, identifiedParams = []; return; end
-    target_branches = all_branch_ids(indx);
+    fprintf('系统检测到拓扑结构包含 %d 个独立分枝。\n', length(all_branch_ids));
+    fprintf('原则：一个分枝对应一组独立实验数据，严禁缺省或使用默认值。\n');
+    
+    % 强制全选，不给用户跳过的机会
+    target_branches = all_branch_ids; 
     
     % 准备基础结构
     identifiedParams = struct();
@@ -134,61 +148,124 @@ function identifiedParams = runParameterIdentification(preConfig)
     identifiedParams.branches = struct();
     identifiedParams.global_linear = []; 
     
-    % 准备分析参数
+    % 准备分析参数 (传递给识别脚本使用)
     [analysis_params, ~] = ConfigAdapter(preConfig, []);
     assignin('base', 'analysis_params', analysis_params); 
-        
-    % 3. 循环处理每一个分枝
+    
+    % 获取项目名称用于日志或保存 (如果 GUI 中未配置，则使用默认值)
+    if isfield(preConfig.basic, 'projectName')
+        proj_name = preConfig.basic.projectName;
+    else
+        proj_name = 'Project';
+    end
+    
+    % 2. 循环处理每一个分枝
     for i = 1:length(target_branches)
         branch_name = target_branches{i};
-        fprintf('\n═══════════════════════════════════════════════\n');
-        fprintf('  >>> 正在处理: %s (%d/%d) <<<\n', branch_name, i, length(target_branches));
-        fprintf('═══════════════════════════════════════════════\n');
+        fprintf('\n-----------------------------------------------\n');
+        fprintf('  >>> 进度 [%d/%d] | 当前处理分枝: %s <<<\n', i, length(target_branches), branch_name);
+        fprintf('-----------------------------------------------\n');
         
-        % 提示加载数据
-        uiwait(msgbox(sprintf('请准备好【%s】的实验数据。\n点击确定选择文件...', branch_name), '数据加载提示'));
+        % === 步骤 A: 获取实验数据路径 (严格显式指定) ===
+        % 提示：为了减少手动点击，您可以将此处改为根据命名规则自动搜索文件
+        % 例如: root_file = fullfile(data_dir, [branch_name, '_Root.csv']);
+        
+        fprintf('  请选择【%s】的实验数据文件 (共4个文件)...\n', branch_name);
+        
+        % 1. 根部传感器数据
+        [f_root, p_root] = uigetfile('*.csv', sprintf('[%s] 1/4: 选择 根部(Root) 传感器数据', branch_name));
+        if isequal(f_root, 0), error('流程终止：必须提供根部数据'); end
+        
+        % 2. 中部传感器数据
+        [f_mid, p_mid] = uigetfile('*.csv', sprintf('[%s] 2/4: 选择 中部(Mid) 传感器数据', branch_name));
+        if isequal(f_mid, 0), error('流程终止：必须提供中部数据'); end
+        
+        % 3. 顶部传感器数据
+        [f_tip, p_tip] = uigetfile('*.csv', sprintf('[%s] 3/4: 选择 顶部(Tip) 传感器数据', branch_name));
+        if isequal(f_tip, 0), error('流程终止：必须提供顶部数据'); end
+        
+        % 4. 力锤数据
+        [f_force, p_force] = uigetfile('*.csv;*.xls;*.xlsx', sprintf('[%s] 4/4: 选择 力锤(Force) 数据', branch_name));
+        if isequal(f_force, 0), error('流程终止：必须提供力锤数据'); end
+        
+        % === 步骤 B: 构建自动加载配置 ===
+        % 将路径打包，传递给 analyse_chibi_data.m
+        current_data_config = struct();
+        current_data_config.root_file = fullfile(p_root, f_root);
+        current_data_config.mid_file = fullfile(p_mid, f_mid);
+        current_data_config.tip_file = fullfile(p_tip, f_tip);
+        current_data_config.force_file = fullfile(p_force, f_force);
+        
+        % 关键：推送到 Base Workspace，触发识别脚本的“无头模式”
+        assignin('base', 'auto_load_config', current_data_config);
         
         try
-            % 运行识别脚本 (注意：analyse_chibi_data.m 必须已去除 clear)
-            run('analyse_chibi_data.m');
+            % === 步骤 C: 运行识别脚本 ===
+            % 清理当前工作区可能残留的结果变量
+            if exist('identified_params', 'var'), clear identified_params; end
             
-            % 捕获结果
-            if evalin('base', 'exist(''identified_params'', ''var'')')
-                current_result = evalin('base', 'identified_params');
+            fprintf('  正在运行核心识别算法 (analyse_chibi_data.m)...\n');
+            
+            % 运行脚本。注意：脚本将在当前函数的工作区执行。
+            run('analyse_chibi_data.m'); 
+            
+            % === 步骤 D: 捕获结果 (修正作用域问题) ===
+            % 直接检查当前工作区，而不是 Base 工作区
+            if exist('identified_params', 'var')
+                current_result = identified_params;
+                
+                % 验证结果有效性
+                if isempty(current_result)
+                    error('识别脚本返回了空结果，请检查数据质量。');
+                end
                 
                 % === 可视化确认环节 ===
-                % 只有重试或保存，不允许跳过
-                btn = questdlg(sprintf('【%s】参数识别完成。\n请检查图表。\n结果是否合格？', branch_name), ...
+                % 让用户快速确认一下拟合图像，保证质量
+                btn = questdlg(sprintf('【%s】参数识别完成。\n请检查生成的图表（如FRF拟合、非线性回归）。\n结果是否合格？', branch_name), ...
                                '质量确认', ...
                                '合格，保存并继续', '不合格，重试', '合格，保存并继续');
                 
                 if strcmp(btn, '不合格，重试')
-                    fprintf('  用户选择重试当前分枝...\n');
-                    i = i - 1; % 回退索引
+                    fprintf('  [!] 用户标记结果不合格，正在重置当前分枝...\n');
+                    i = i - 1; % 回退索引，重新处理当前分枝
                     continue;
-                elseif isempty(btn)
+                elseif isempty(btn) || strcmp(btn, '取消')
                     error('用户取消流程');
                 end
                 
-                % === 保存数据 ===
+                % === 步骤 E: 保存数据 ===
                 identifiedParams.branches.(branch_name) = current_result;
-                fprintf('  [√] %s 参数已保存。\n', branch_name);
-                                
-                % 关闭当前图表，准备下一个
-                close all; 
+                fprintf('  [√] 分枝 %s 参数已成功保存。\n', branch_name);
+                
+                % === 清理工作区，准备下一轮 ===
+                close all;  % 关闭所有图表
+                clear identified_params; % 清除局部变量
+                evalin('base', 'clear auto_load_config'); % 清除 Base 中的配置，防止误读
+                
             else
-                warning('脚本运行结束但未发现 identified_params 变量。');
+                % 这是一个严重的逻辑错误，说明脚本跑完了但没生成变量
+                error('严重错误：脚本运行结束，但在当前工作区未找到 "identified_params" 变量。\n请检查 analyse_chibi_data.m 是否正确执行了赋值操作。');
             end
             
         catch ME
-            errordlg(sprintf('处理 %s 时出错: %s', branch_name, ME.message), '错误');
-            return;
+            % 错误处理：提供详细信息
+            errordlg(sprintf('处理分枝 %s 时发生错误:\n%s', branch_name, ME.message), '识别中断');
+            rethrow(ME); % 在控制台打印完整堆栈，便于调试
         end
     end
     
-    % 保存总结果
-    save('IdentifiedParams_FullTopology.mat', 'identifiedParams');
-    assignin('base', 'identifiedParams', identifiedParams); % 确保留在工作区
+    % 3. 保存最终总结果
+    % 使用项目名称生成文件名，避免覆盖
+    file_name = sprintf('%s_IdentifiedParams.mat', proj_name);
+    save_path = fullfile(pwd, file_name);
+    
+    save(save_path, 'identifiedParams');
+    assignin('base', 'identifiedParams', identifiedParams); % 同时也留在 Base 工作区供后续步骤使用
+    
+    fprintf('\n========================================\n');
+    fprintf('   全部分枝参数识别任务圆满完成！\n');
+    fprintf('   识别结果已保存至: %s\n', save_path);
+    fprintf('========================================\n');
 end
 
 % --- 辅助函数：递归生成所有分枝ID ---

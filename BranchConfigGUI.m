@@ -256,12 +256,12 @@ function createBasicSettingsPanel(parent, config)
               'Callback', @(~,~) browseFolder(panel));
     
     y = y - dy;
-    uicontrol(panel, 'Style', 'text', 'String', '模型名称:', ...
+    uicontrol(panel, 'Style', 'text', 'String', '项目名称 (ID):', ...
               'Units', 'normalized', 'Position', [0.02 y 0.15 0.06], ...
               'HorizontalAlignment', 'left');
-    uicontrol(panel, 'Style', 'edit', 'String', config.basic.modelName, ...
+    uicontrol(panel, 'Style', 'edit', 'String', 'MyTree_01', ...
               'Units', 'normalized', 'Position', [0.18 y 0.4 0.06], ...
-              'Tag', 'edit_modelName');
+              'Tag', 'edit_projectName');
     
     y = y - dy;
     uicontrol(panel, 'Style', 'text', 'String', '重力加速度 (m/s²):', ...
@@ -849,7 +849,10 @@ function config = collectAllParameters(fig)
         
         % 基础设置
         config.basic.workFolder = getEditValue(fig, 'edit_workFolder', 'string');
-        config.basic.modelName = getEditValue(fig, 'edit_modelName', 'string');
+        config.basic.projectName = getEditValue(fig, 'edit_projectName', 'string');
+        if isempty(config.basic.projectName)
+            config.basic.projectName = 'Untitled_Tree'; % 防止为空
+        end
         config.basic.gravity_g = getEditValue(fig, 'edit_gravity', 'double');
         config.basic.useParallel = getCheckValue(fig, 'check_parallel');
         parallel_workers = getEditValue(fig, 'edit_parallel_workers', 'double');

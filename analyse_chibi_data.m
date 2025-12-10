@@ -5837,60 +5837,52 @@ end
 %% =====================================================================
 
 function detachment_model = SAD_Stage4_DetachmentForceModeling()
-    % SAD阶段四: 果实脱落力统计标定
+    % SAD_Stage4_DetachmentForceModeling - 果实脱落力统计标定 (手动定义版)
     %
-    % 根据V3手稿2.3.4节:
-    % "建立多元线性回归预测模型描述脱落力的分布规律"
-    % F_break = β0 + β1*H_crown + β2*P_rel + β3*D_fruit + β4*S_crack + ε
+    % 功能：
+    %   直接定义果实脱落力的回归模型参数。
+    %   建立预测模型 F_break = f(H, P, D, S)。
+    %
+    % 输入：无
+    % 输出：detachment_model - 包含回归系数和预测函数的结构体
     
-    fprintf('  [4.1] 建立果实脱落力预测模型...\n');
+    fprintf('  [4.1] 建立果实脱落力预测模型 (使用手动定义参数)...\n');
     
-    % 回归系数 (基于V3手稿Table 3的典型值)
-    % 这些系数应从实际拉伸实验数据中拟合获得
     detachment_model = struct();
     
-    % 回归系数
-    % 多因素回归模型系数 
-    % TODO: 以下为初始估计值，需用实验数据拟合后更新
+    % ==========================================================
+    % 手动定义回归系数 (当前全为0，请在有了真实数据后修改此处)
+    % ==========================================================
     % 拟合公式: F_break = beta0 + beta1*H + beta2*P + beta3*D + beta4*S + ε
-    if evalin('base', 'exist(''detachment_calibration_data'', ''var'')')
-        calib_data = evalin('base', 'detachment_calibration_data');
-        fprintf('    [√] 检测到外部标定数据，正在应用...\n');
-        detachment_model.beta0 = calib_data.beta0;
-        detachment_model.beta1 = calib_data.beta1;
-        detachment_model.beta2 = calib_data.beta2;
-        detachment_model.beta3 = calib_data.beta3;
-        detachment_model.beta4 = calib_data.beta4;
-        detachment_model.sigma_epsilon = calib_data.sigma_epsilon;
-    else
-        % 如果没有数据，抛出错误，强迫用户关注这个问题，而不是默默使用 8.5
-        % 或者弹窗让用户输入
-        answer = questdlg('未检测到果实脱落力标定数据。是否使用标准参考值(仅用于测试)?', ...
-            '标定数据缺失', '使用参考值', '停止并报错', '停止并报错');
-        
-        if strcmp(answer, '停止并报错')
-            error('SAD:MissingCalibration', '流程终止：请先进行果实拉伸试验并导入标定数据。');
-        end
-    end
     
-    % 残差标准差
-    detachment_model.sigma_epsilon = 1.5;  % N
+    detachment_model.beta0 = 0;    % 截距项 (N)
+    detachment_model.beta1 = 0;    % H_crown系数 (N/m) - 冠层高度
+    detachment_model.beta2 = 0;    % P_rel系数 (N) - 相对位置 (0~1)
+    detachment_model.beta3 = 0;    % D_fruit系数 (N/cm) - 果实直径
+    detachment_model.beta4 = 0;    % S_crack系数 (N) - 开裂状态 (0/1)
     
-    % 模型统计信息
-    detachment_model.R_squared = 0.72;
-    detachment_model.p_value = 0.001;
+    detachment_model.sigma_epsilon = 0; % 残差标准差 (N)
     
-    % 预测函数
-    detachment_model.predict = @(H_crown, P_rel, D_fruit, S_crack) ...
+    % 统计信息 (可选，占位)
+    detachment_model.R_squared = 0;
+    detachment_model.p_value = 0;
+    
+    % ==========================================================
+    % 定义预测函数 (逻辑保持不变)
+    % ==========================================================
+    
+    % --- 定义单点预测函数 ---
+    % 输入: H(冠层高度), P(相对位置), D(果径), S(开裂状态 0/1)
+    detachment_model.predict = @(H, P, D, S) ...
         detachment_model.beta0 + ...
-        detachment_model.beta1 * H_crown + ...
-        detachment_model.beta2 * P_rel + ...
-        detachment_model.beta3 * D_fruit + ...
-        detachment_model.beta4 * S_crack + ...
+        detachment_model.beta1 * H + ...
+        detachment_model.beta2 * P + ...
+        detachment_model.beta3 * D + ...
+        detachment_model.beta4 * S + ...
         detachment_model.sigma_epsilon * randn();
     
-    % 批量预测函数 (用于仿真)
-    % 输入可以是标量或向量，n为输出样本数
+    % --- 定义批量预测函数 (用于仿真初始化) ---
+    % 输入可以是向量，n为生成的样本数
     detachment_model.batch_predict = @(H, P, D, S, n) ...
         detachment_model.beta0 + ...
         detachment_model.beta1 * H(:) + ...
@@ -5899,11 +5891,11 @@ function detachment_model = SAD_Stage4_DetachmentForceModeling()
         detachment_model.beta4 * S(:) + ...
         detachment_model.sigma_epsilon * randn(max(n, numel(H)), 1);
     
-    fprintf('      F_break = %.2f + %.2f*H + %.2f*P + %.2f*D + %.2f*S + ε\n', ...
-        detachment_model.beta0, detachment_model.beta1, ...
-        detachment_model.beta2, detachment_model.beta3, detachment_model.beta4);
-    fprintf('      σ_ε = %.2f N, R² = %.2f\n', ...
-        detachment_model.sigma_epsilon, detachment_model.R_squared);
+    % 日志输出
+    fprintf('    [√] 模型参数已初始化 (当前均为 0，请后续修改)\n');
+    fprintf('        公式: F = %.2f + %.2f*H + %.2f*P + %.2f*D + %.2f*S\n', ...
+            detachment_model.beta0, detachment_model.beta1, detachment_model.beta2, ...
+            detachment_model.beta3, detachment_model.beta4);
     
     fprintf('  [√] 阶段四完成\n');
 end
