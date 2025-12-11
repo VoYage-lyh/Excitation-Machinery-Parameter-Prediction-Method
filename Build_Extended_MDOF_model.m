@@ -2380,29 +2380,27 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         % fprintf('  辅助函数 clean_subsystem_internals: 子系统 "%s" 清理完成。\n', subsystem_path);
     end % 结束函数 clean_subsystem_internals
     
-    %% create_mass_subsystem_2D
+    %% create_mass_subsystem_2D (完整确认版)
     % 功能: 在指定的父路径下创建一个代表二维点质量的Simulink子系统。
-    %       该子系统内部包含牛顿第二定律的积分 (F=ma -> a -> v -> p)，
-    %       可以接收外部连接力、激励力。
-    %       注意：此版本假设重力效应在模型外部被补偿，因此内部不包含重力项。
+    %       包含牛顿第二定律积分逻辑 (F=ma -> a -> v -> p)。
+    %       支持外部连接力、激励力输入，并支持设置位移积分器的初始条件。
+    %
     % 输入参数:
-    %   parent_path (char/string):    新质量块子系统将被创建于此父级路径下。
-    %   mass_name (char/string):      新质量块子系统的名称。
-    %   mass_val (double):            质量块的质量值 (kg)。
-    %   gravity_g_val (double):       (此版本中已忽略) 重力加速度值。
-    %   num_conn_force_pairs (int):   期望接收的连接力对数量。
-    %   has_excitation_ports (logical):是否创建外部激励力输入端口。
-    %   position_vec (double array):  [x, y, width, height] 定义子系统位置和大小。
-    %   y_initial_condition (char/string): Y方向位移积分器的初始条件值 (字符串形式)。
-    %   z_initial_condition (char/string): Z方向位移积分器的初始条件值 (字符串形式)。
-    % 输出参数:
-    %   mass_sys_actual_path (char):  实际创建的质量块子系统的完整路径。
+    %   parent_path: 父级路径
+    %   mass_name: 子系统名称
+    %   mass_val: 质量值 (kg)
+    %   gravity_g_val: 重力加速度 (本模型中主要用于外部计算，内部暂不直接使用)
+    %   num_conn_force_pairs: 连接力对数量
+    %   has_excitation_ports: 是否有外部激励端口
+    %   position_vec: [x, y, w, h] 位置向量
+    %   y_initial_condition: Y方向初始位移 (字符串, e.g. '0.001')
+    %   z_initial_condition: Z方向初始位移 (字符串, e.g. '-0.002')
     function mass_sys_actual_path = create_mass_subsystem_2D(parent_path, mass_name, mass_val, ...
                                                            gravity_g_val, num_conn_force_pairs, ...
                                                            has_excitation_ports, position_vec, ...
                                                            y_initial_condition, z_initial_condition)
         
-        % --- 为新参数提供默认值，以保持向后兼容 ---
+        % --- 参数默认值处理 (向后兼容) ---
         if nargin < 8
             y_initial_condition = '0'; 
         end
@@ -2410,7 +2408,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             z_initial_condition = '0';
         end
         
-        % 输入参数校验
+        % 输入校验
         if mass_val <= 0
             error('create_mass_subsystem_2D: 质量值 (mass_val) 必须为正数。收到: %f', mass_val);
         end
@@ -2418,13 +2416,14 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             error('create_mass_subsystem_2D: 连接力对数量 (num_conn_force_pairs) 不能为负。收到: %d', num_conn_force_pairs);
         end
     
+        % 创建并清理子系统
         mass_sys_path_tentative = [parent_path, '/', mass_name];
         add_block('simulink/Ports & Subsystems/Subsystem', mass_sys_path_tentative, ...
                   'Position', position_vec, 'MakeNameUnique', 'on');
         mass_sys_actual_path = get_param(mass_sys_path_tentative, 'Object').getFullName();
         clean_subsystem_internals(mass_sys_actual_path);
     
-        % --- 定义子系统内部模块的布局参数 ---
+        % --- 内部布局参数 ---
         inport_x_pos = 20; inport_y_start = 30;
         inport_width_s = 30; inport_height_s = 20; inport_v_spacing = 30;
         sum_block_x_pos = 80; sum_block_width = 20;
@@ -2435,50 +2434,70 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         outport_x_pos = 310; outport_y_start = 30;
         outport_width_s = 30; outport_height_s = 20; outport_v_spacing = 30;
     
-        % --- 创建输入端口 ---
+        % --- 1. 创建输入端口 (Inports) ---
         current_inport_number_overall = 1;
         num_y_force_inports = num_conn_force_pairs + has_excitation_ports;
         num_z_force_inports = num_conn_force_pairs + has_excitation_ports;
         
         current_y_pos = inport_y_start;
+        
         % Y方向力输入
         for i_conn = 1:num_conn_force_pairs
             in_name = ['F_conn', num2str(i_conn), '_y_in'];
-            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/', in_name], 'Port', num2str(current_inport_number_overall), 'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
-            current_y_pos = current_y_pos + inport_v_spacing; current_inport_number_overall = current_inport_number_overall + 1;
+            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/', in_name], ...
+                      'Port', num2str(current_inport_number_overall), ...
+                      'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
+            current_y_pos = current_y_pos + inport_v_spacing; 
+            current_inport_number_overall = current_inport_number_overall + 1;
         end
         if has_excitation_ports
-            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/F_excite_y_in'], 'Port', num2str(current_inport_number_overall), 'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
-            current_y_pos = current_y_pos + inport_v_spacing; current_inport_number_overall = current_inport_number_overall + 1;
+            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/F_excite_y_in'], ...
+                      'Port', num2str(current_inport_number_overall), ...
+                      'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
+            current_y_pos = current_y_pos + inport_v_spacing; 
+            current_inport_number_overall = current_inport_number_overall + 1;
         end
         y_force_inputs_y_center = inport_y_start + (num_y_force_inports * inport_v_spacing - inport_v_spacing) / 2;
         
-        current_y_pos = current_y_pos + 10; % 留出Y和Z的间隔
+        current_y_pos = current_y_pos + 10; % Y/Z 分隔
         z_inport_initial_y = current_y_pos;
+        
         % Z方向力输入
         for i_conn = 1:num_conn_force_pairs
             in_name = ['F_conn', num2str(i_conn), '_z_in'];
-            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/', in_name], 'Port', num2str(current_inport_number_overall), 'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
-            current_y_pos = current_y_pos + inport_v_spacing; current_inport_number_overall = current_inport_number_overall + 1;
+            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/', in_name], ...
+                      'Port', num2str(current_inport_number_overall), ...
+                      'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
+            current_y_pos = current_y_pos + inport_v_spacing; 
+            current_inport_number_overall = current_inport_number_overall + 1;
         end
         if has_excitation_ports
-            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/F_excite_z_in'], 'Port', num2str(current_inport_number_overall), 'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
+            add_block('simulink/Sources/In1', [mass_sys_actual_path, '/F_excite_z_in'], ...
+                      'Port', num2str(current_inport_number_overall), ...
+                      'Position', [inport_x_pos, current_y_pos, inport_x_pos + inport_width_s, current_y_pos + inport_height_s]);
         end
         z_force_inputs_y_center = z_inport_initial_y + (num_z_force_inports * inport_v_spacing - inport_v_spacing) / 2;
     
-        % --- Y方向动力学链 ---
+        % --- 2. Y方向动力学链 (F_sum -> 1/m -> a -> v -> p) ---
         y_chain_vertical_center = y_force_inputs_y_center - dynamics_block_height / 2;
         y_sum_output_source_block = '';
+        
         if num_y_force_inports == 0
             y_sum_output_source_block = 'simulink/Sources/Constant';
-            add_block(y_sum_output_source_block, [mass_sys_actual_path, '/ZeroForce_Y_Input'], 'Value', '0', 'Position', [sum_block_x_pos, y_chain_vertical_center, sum_block_x_pos+30, y_chain_vertical_center+30]);
-            y_sum_output_source_block = 'ZeroForce_Y_Input'; % For add_line
+            add_block(y_sum_output_source_block, [mass_sys_actual_path, '/ZeroForce_Y_Input'], ...
+                      'Value', '0', ...
+                      'Position', [sum_block_x_pos, y_chain_vertical_center, sum_block_x_pos+30, y_chain_vertical_center+30]);
+            y_sum_output_source_block = 'ZeroForce_Y_Input'; 
         else
             y_sum_output_source_block = 'SumForces_Y';
             sum_inputs_str_y = repmat('+', 1, num_y_force_inports);
             sum_y_height = max(sum_block_min_height, num_y_force_inports * sum_block_height_per_input * 0.8);
             sum_y_y_pos = y_force_inputs_y_center - sum_y_height / 2;
-            add_block('simulink/Math Operations/Sum', [mass_sys_actual_path, '/', y_sum_output_source_block], 'Inputs', sum_inputs_str_y, 'IconShape', 'rectangular', 'Position', [sum_block_x_pos, sum_y_y_pos, sum_block_x_pos + sum_block_width, sum_y_y_pos + sum_y_height]);
+            
+            add_block('simulink/Math Operations/Sum', [mass_sys_actual_path, '/', y_sum_output_source_block], ...
+                      'Inputs', sum_inputs_str_y, 'IconShape', 'rectangular', ...
+                      'Position', [sum_block_x_pos, sum_y_y_pos, sum_block_x_pos + sum_block_width, sum_y_y_pos + sum_y_height]);
+            
             current_sum_input_idx_y = 1;
             for i_conn = 1:num_conn_force_pairs
                 add_line(mass_sys_actual_path, ['F_conn', num2str(i_conn), '_y_in/1'], [y_sum_output_source_block, '/', num2str(current_sum_input_idx_y)]);
@@ -2489,29 +2508,43 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             end
         end
         
-        add_block('simulink/Commonly Used Blocks/Gain', [mass_sys_actual_path, '/InverseMass_Y'], 'Gain', ['1/', num2str(mass_val, '%.4g')], 'Position', [gain_inv_mass_x_pos, y_chain_vertical_center, gain_inv_mass_x_pos + dynamics_block_width, y_chain_vertical_center + dynamics_block_height]);
+        % 1/m Gain
+        add_block('simulink/Commonly Used Blocks/Gain', [mass_sys_actual_path, '/InverseMass_Y'], ...
+                  'Gain', ['1/', num2str(mass_val, '%.4g')], ...
+                  'Position', [gain_inv_mass_x_pos, y_chain_vertical_center, gain_inv_mass_x_pos + dynamics_block_width, y_chain_vertical_center + dynamics_block_height]);
         add_line(mass_sys_actual_path, [y_sum_output_source_block, '/1'], 'InverseMass_Y/1');
-        add_block('simulink/Continuous/Integrator', [mass_sys_actual_path, '/Integrator_Velocity_Y'], 'Position', [integrator1_x_pos, y_chain_vertical_center, integrator1_x_pos + dynamics_block_width, y_chain_vertical_center + dynamics_block_height]);
+        
+        % Integrator 1: a -> v
+        add_block('simulink/Continuous/Integrator', [mass_sys_actual_path, '/Integrator_Velocity_Y'], ...
+                  'Position', [integrator1_x_pos, y_chain_vertical_center, integrator1_x_pos + dynamics_block_width, y_chain_vertical_center + dynamics_block_height]);
         add_line(mass_sys_actual_path, 'InverseMass_Y/1', 'Integrator_Velocity_Y/1');
-        % *** 修改点: 为位移积分器设置初始条件 ***
+        
+        % Integrator 2: v -> p (设置初始条件)
         add_block('simulink/Continuous/Integrator', [mass_sys_actual_path, '/Integrator_Displacement_Y'], ...
                   'Position', [integrator2_x_pos, y_chain_vertical_center, integrator2_x_pos + dynamics_block_width, y_chain_vertical_center + dynamics_block_height], ...
-                  'InitialCondition', y_initial_condition); % <-- 新增    
+                  'InitialCondition', y_initial_condition); % <--- [关键] 应用传入的IC
         add_line(mass_sys_actual_path, 'Integrator_Velocity_Y/1', 'Integrator_Displacement_Y/1');
     
-        % --- Z方向动力学链 --- (逻辑与Y方向对称)
+        % --- 3. Z方向动力学链 (逻辑对称) ---
         z_chain_vertical_center = z_force_inputs_y_center - dynamics_block_height / 2;
         z_sum_output_source_block = '';
+        
         if num_z_force_inports == 0
             z_sum_output_source_block = 'simulink/Sources/Constant';
-            add_block(z_sum_output_source_block, [mass_sys_actual_path, '/ZeroForce_Z_Input'], 'Value', '0', 'Position', [sum_block_x_pos, z_chain_vertical_center, sum_block_x_pos+30, z_chain_vertical_center+30]);
+            add_block(z_sum_output_source_block, [mass_sys_actual_path, '/ZeroForce_Z_Input'], ...
+                      'Value', '0', ...
+                      'Position', [sum_block_x_pos, z_chain_vertical_center, sum_block_x_pos+30, z_chain_vertical_center+30]);
             z_sum_output_source_block = 'ZeroForce_Z_Input';
         else
             z_sum_output_source_block = 'SumForces_Z';
             sum_inputs_str_z = repmat('+', 1, num_z_force_inports);
             sum_z_height = max(sum_block_min_height, num_z_force_inports * sum_block_height_per_input * 0.8);
             sum_z_y_pos = z_force_inputs_y_center - sum_z_height / 2;
-            add_block('simulink/Math Operations/Sum', [mass_sys_actual_path, '/', z_sum_output_source_block], 'Inputs', sum_inputs_str_z, 'IconShape', 'rectangular', 'Position', [sum_block_x_pos, sum_z_y_pos, sum_block_x_pos + sum_block_width, sum_z_y_pos + sum_z_height]);
+            
+            add_block('simulink/Math Operations/Sum', [mass_sys_actual_path, '/', z_sum_output_source_block], ...
+                      'Inputs', sum_inputs_str_z, 'IconShape', 'rectangular', ...
+                      'Position', [sum_block_x_pos, sum_z_y_pos, sum_block_x_pos + sum_block_width, sum_z_y_pos + sum_z_height]);
+            
             current_sum_input_idx_z = 1;
             for i_conn = 1:num_conn_force_pairs
                 add_line(mass_sys_actual_path, ['F_conn', num2str(i_conn), '_z_in/1'], [z_sum_output_source_block, '/', num2str(current_sum_input_idx_z)]);
@@ -2522,75 +2555,98 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             end
         end
         
-        add_block('simulink/Commonly Used Blocks/Gain', [mass_sys_actual_path, '/InverseMass_Z'], 'Gain', ['1/', num2str(mass_val, '%.4g')], 'Position', [gain_inv_mass_x_pos, z_chain_vertical_center, gain_inv_mass_x_pos + dynamics_block_width, z_chain_vertical_center + dynamics_block_height]);
+        add_block('simulink/Commonly Used Blocks/Gain', [mass_sys_actual_path, '/InverseMass_Z'], ...
+                  'Gain', ['1/', num2str(mass_val, '%.4g')], ...
+                  'Position', [gain_inv_mass_x_pos, z_chain_vertical_center, gain_inv_mass_x_pos + dynamics_block_width, z_chain_vertical_center + dynamics_block_height]);
         add_line(mass_sys_actual_path, [z_sum_output_source_block, '/1'], 'InverseMass_Z/1');
-        add_block('simulink/Continuous/Integrator', [mass_sys_actual_path, '/Integrator_Velocity_Z'], 'Position', [integrator1_x_pos, z_chain_vertical_center, integrator1_x_pos + dynamics_block_width, z_chain_vertical_center + dynamics_block_height]);
+        
+        add_block('simulink/Continuous/Integrator', [mass_sys_actual_path, '/Integrator_Velocity_Z'], ...
+                  'Position', [integrator1_x_pos, z_chain_vertical_center, integrator1_x_pos + dynamics_block_width, z_chain_vertical_center + dynamics_block_height]);
         add_line(mass_sys_actual_path, 'InverseMass_Z/1', 'Integrator_Velocity_Z/1');
-        % *** 修改点: 为位移积分器设置初始条件 ***
+        
         add_block('simulink/Continuous/Integrator', [mass_sys_actual_path, '/Integrator_Displacement_Z'], ...
                   'Position', [integrator2_x_pos, z_chain_vertical_center, integrator2_x_pos + dynamics_block_width, z_chain_vertical_center + dynamics_block_height], ...
-                  'InitialCondition', z_initial_condition); % <-- 新增
+                  'InitialCondition', z_initial_condition); % <--- [关键] 应用传入的IC
         add_line(mass_sys_actual_path, 'Integrator_Velocity_Z/1', 'Integrator_Displacement_Z/1');
     
-        % --- 创建输出端口 ---
+        % --- 4. 创建输出端口 (Outports: y, vy, z, vz, ay, az) ---
         current_outport_number = 1;
         current_y_pos_for_outports = outport_y_start;
         
-        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/y_out'], 'Port', num2str(current_outport_number), 'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
+        % Y位移
+        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/y_out'], ...
+                  'Port', num2str(current_outport_number), ...
+                  'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
         add_line(mass_sys_actual_path, 'Integrator_Displacement_Y/1', 'y_out/1');
-        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; current_outport_number = current_outport_number + 1;
+        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; 
+        current_outport_number = current_outport_number + 1;
     
-        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/vy_out'], 'Port', num2str(current_outport_number), 'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
+        % Y速度
+        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/vy_out'], ...
+                  'Port', num2str(current_outport_number), ...
+                  'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
         add_line(mass_sys_actual_path, 'Integrator_Velocity_Y/1', 'vy_out/1');
-        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; current_outport_number = current_outport_number + 1;
+        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; 
+        current_outport_number = current_outport_number + 1;
     
-        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/z_out'], 'Port', num2str(current_outport_number), 'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
+        % Z位移
+        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/z_out'], ...
+                  'Port', num2str(current_outport_number), ...
+                  'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
         add_line(mass_sys_actual_path, 'Integrator_Displacement_Z/1', 'z_out/1');
-        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; current_outport_number = current_outport_number + 1;
+        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; 
+        current_outport_number = current_outport_number + 1;
     
-        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/vz_out'], 'Port', num2str(current_outport_number), 'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
+        % Z速度
+        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/vz_out'], ...
+                  'Port', num2str(current_outport_number), ...
+                  'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
         add_line(mass_sys_actual_path, 'Integrator_Velocity_Z/1', 'vz_out/1');
-        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; current_outport_number = current_outport_number + 1;
+        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; 
+        current_outport_number = current_outport_number + 1;
     
-        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/ay_out'], 'Port', num2str(current_outport_number), 'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
+        % Y加速度 (Force/Mass)
+        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/ay_out'], ...
+                  'Port', num2str(current_outport_number), ...
+                  'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
         add_line(mass_sys_actual_path, 'InverseMass_Y/1', 'ay_out/1');
-        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; current_outport_number = current_outport_number + 1;
+        current_y_pos_for_outports = current_y_pos_for_outports + outport_v_spacing; 
+        current_outport_number = current_outport_number + 1;
     
-        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/az_out'], 'Port', num2str(current_outport_number), 'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
+        % Z加速度
+        add_block('simulink/Sinks/Out1', [mass_sys_actual_path, '/az_out'], ...
+                  'Port', num2str(current_outport_number), ...
+                  'Position', [outport_x_pos, current_y_pos_for_outports, outport_x_pos + outport_width_s, current_y_pos_for_outports + outport_height_s]);
         add_line(mass_sys_actual_path, 'InverseMass_Z/1', 'az_out/1');
     end
-    %% connect_elements_2D
-    % 功能: 在指定的父模型/子系统内部，创建连接两个元件 (通常是一个上游元件和一个下游质量块)
-    %       的二维 (Y和Z方向) 弹簧-阻尼器连接。
-    %       计算相对位移和相对速度，然后乘以刚度(k)和阻尼(c)得到连接力。
+
+    %% connect_elements_2D (完整修改版 - 支持非线性)
+    % 功能: 在指定的父模型/子系统内部，创建连接两个元件的二维 (Y和Z方向) 弹簧-阻尼器连接。
+    %       包含线性项 (k, c) 和 非线性项 (k3, c2)。
+    %       计算相对位移和相对速度，然后乘以各系数得到总连接力。
     %       此力作用于下游质量块，其反作用力作用于上游元件。
+    %
     % 输入参数:
-    %   parent_model_path (char/string):  连接元件将被创建于此父级路径下。
-    %   upstream_state_provider_path (char/string): 提供上游元件状态 (y,vy,z,vz) 的模块的完整路径。
-    %   upstream_state_provider_type (char/string): 上游状态提供模块的类型 ('BusSelector' 或 'Mass')。
-    %   downstream_mass_path (char/string): 需要接收连接力的下游质量块子系统的完整路径。
-    %   downstream_mass_name_prefix (char/string): 下游质量块的名称前缀，用于生成连接块的名称。
-    %   k_y, c_y (double):                Y方向连接的刚度和阻尼系数。
-    %   k_z, c_z (double):                Z方向连接的刚度和阻尼系数。
-    %   upstream_reaction_target_path (char/string): 
-    %                                     - 如果 is_upstream_fixed=true: 固定基座(FixedBase)的路径。
-    %                                     - 如果 is_cross_boundary_reaction=true (且非fixed): 当前parent_model_path (反作用力通过Outport)。
-    %                                     - 否则: 上游质量块子系统的路径。
-    %   upstream_F_react_port_spec_y (char/string or double):
-    %   upstream_F_react_port_spec_z (char/string or double):
-    %                                     - 如果 is_upstream_fixed=true or is_cross_boundary_reaction=true:
-    %                                       它们是 parent_model_path 中用于输出反作用力的 Outport 模块的 *期望名称*。
-    %                                     - 否则: 它们是上游质量块上 F_connX_y/z_in 的连接力对 *索引号* (double)。
-    %   downstream_F_conn_pair_idx (double): 下游质量块上 F_connX_y/z_in 的连接力对 *索引号*。
-    %   conn_block_base_pos_xy (double array): [x, y] 连接逻辑模块组在父级中的大致基准位置。
-    %   is_upstream_fixed (logical):      布尔值，指示上游元件是否为固定基座。
-    %   is_cross_boundary_reaction (logical):布尔值，指示此连接是否跨越一个主要子系统边界。
-    %   layout_params_struct (struct):    包含Simulink模块布局参数的结构体。
-    % 输出参数: 无
+    %   parent_model_path: 连接元件将被创建于此父级路径下。
+    %   upstream_state_provider_path: 提供上游元件状态 (y,vy,z,vz) 的模块完整路径。
+    %   upstream_state_provider_type: 'BusSelector' 或 'Mass'。
+    %   downstream_mass_path: 下游质量块子系统的完整路径。
+    %   downstream_mass_name_prefix: 下游质量块名称前缀。
+    %   k_y, c_y: Y方向线性刚度和阻尼。
+    %   k3_y, c2_y: Y方向非线性刚度(Duffing)和非线性阻尼。
+    %   k_z, c_z: Z方向线性刚度和阻尼。
+    %   k3_z, c2_z: Z方向非线性刚度(Duffing)和非线性阻尼。
+    %   upstream_reaction_target_path: 反作用力目标路径。
+    %   upstream_F_react_port_spec_y/z: 反作用力端口规格。
+    %   downstream_F_conn_pair_idx: 下游质量块上的连接力对索引。
+    %   conn_block_base_pos_xy: [x, y] 基准位置。
+    %   is_upstream_fixed: 上游是否为固定基座。
+    %   is_cross_boundary_reaction: 是否跨边界连接。
+    %   layout_params_struct: 布局参数结构体。
     function connect_elements_2D(parent_model_path, ...
                                    upstream_state_provider_path, upstream_state_provider_type, ...
                                    downstream_mass_path, downstream_mass_name_prefix, ...
-                                   k_y, c_y, k_z, c_z, ...
+                                   k_y, c_y, k3_y, c2_y, k_z, c_z, k3_z, c2_z, ...
                                    upstream_reaction_target_path, ...
                                    upstream_F_react_port_spec_y, upstream_F_react_port_spec_z, ...
                                    downstream_F_conn_pair_idx, conn_block_base_pos_xy, ...
@@ -2607,9 +2663,6 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
     
         downstream_mass_rel_path = strrep(downstream_mass_path, [parent_model_path, '/'], '');
         upstream_provider_rel_path = strrep(upstream_state_provider_path, [parent_model_path, '/'], '');
-    
-        upstream_y_source_relport = ''; upstream_vy_source_relport = '';
-        upstream_z_source_relport = ''; upstream_vz_source_relport = '';
     
         switch lower(upstream_state_provider_type)
             case 'busselector'
@@ -2634,7 +2687,11 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         gain_w = 30; gain_h = 20; 
         h_spacing = 25; % 水平间距调整         
         
-        % --- Y方向连接逻辑 ---
+        % =========================================================================
+        % --- Y方向连接逻辑 (Y-Direction Logic) ---
+        % =========================================================================
+        
+        % 1. 相对位移 dy
         dy_sum_name = [conn_block_name_base, '_dy_sum'];
         add_block('simulink/Math Operations/Sum', [parent_model_path, '/', dy_sum_name], ...
                   'Inputs', '+-', 'IconShape', 'rectangular', ... 
@@ -2642,6 +2699,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         add_line(parent_model_path, upstream_y_source_relport, [dy_sum_name, '/1']); 
         add_line(parent_model_path, [downstream_mass_rel_path, '/1'], [dy_sum_name, '/2']); 
     
+        % 2. 相对速度 dvy
         dvy_sum_name = [conn_block_name_base, '_dvy_sum'];
         add_block('simulink/Math Operations/Sum', [parent_model_path, '/', dvy_sum_name], ...
                   'Inputs', '+-', 'IconShape', 'rectangular', ...
@@ -2649,6 +2707,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         add_line(parent_model_path, upstream_vy_source_relport, [dvy_sum_name, '/1']); 
         add_line(parent_model_path, [downstream_mass_rel_path, '/2'], [dvy_sum_name, '/2']); 
     
+        % 3. 线性刚度力 (k_y * dy)
         ky_gain_name = [conn_block_name_base, '_ky_gain'];
         add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', ky_gain_name], ...
                   'Gain', num2str(k_y, '%.4g'), ...
@@ -2656,28 +2715,73 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                                cb_x + sum_w + h_spacing + gain_w, cb_y_start_y_dir + (sum_h+gain_h)/2]);
         add_line(parent_model_path, [dy_sum_name, '/1'], [ky_gain_name, '/1']);
     
+        % 4. 线性阻尼力 (c_y * dvy)
         cy_gain_name = [conn_block_name_base, '_cy_gain'];
         add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', cy_gain_name], ...
                   'Gain', num2str(c_y, '%.4g'), ...
                   'Position', [cb_x + sum_w + h_spacing, cb_y_start_y_dir + sum_h + 15 + (sum_h-gain_h)/2, ...
                                cb_x + sum_w + h_spacing + gain_w, cb_y_start_y_dir + sum_h + 15 + (sum_h+gain_h)/2]);
         add_line(parent_model_path, [dvy_sum_name, '/1'], [cy_gain_name, '/1']);
+        
+        % 5. 非线性刚度 (Duffing: k3_y * dy^3)
+        dy_pow3_name = [conn_block_name_base, '_dy_pow3'];
+        add_block('simulink/Math Operations/Math Function', [parent_model_path, '/', dy_pow3_name], ...
+                  'Function', 'pow', 'Operand', '3', ...
+                  'Position', [cb_x + sum_w + h_spacing, cb_y_start_y_dir + 55, ... % 偏移位置
+                               cb_x + sum_w + h_spacing + gain_w, cb_y_start_y_dir + 75]);
+        add_line(parent_model_path, [dy_sum_name, '/1'], [dy_pow3_name, '/1']);
+        
+        k3y_gain_name = [conn_block_name_base, '_k3y_gain'];
+        add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', k3y_gain_name], ...
+                  'Gain', num2str(k3_y, '%.4g'), ...
+                  'Position', [cb_x + sum_w + h_spacing + 50, cb_y_start_y_dir + 55, ...
+                               cb_x + sum_w + h_spacing + 50 + gain_w, cb_y_start_y_dir + 75]);
+        add_line(parent_model_path, [dy_pow3_name, '/1'], [k3y_gain_name, '/1']);
+
+        % 6. 非线性阻尼 (c2_y * |dvy| * dvy)
+        dvy_abs_name = [conn_block_name_base, '_dvy_abs'];
+        add_block('simulink/Math Operations/Abs', [parent_model_path, '/', dvy_abs_name], ...
+                  'Position', [cb_x + sum_w + h_spacing, cb_y_start_y_dir + 90, ...
+                               cb_x + sum_w + h_spacing + 20, cb_y_start_y_dir + 110]);
+        add_line(parent_model_path, [dvy_sum_name, '/1'], [dvy_abs_name, '/1']);
+        
+        dvy_prod_name = [conn_block_name_base, '_dvy_prod'];
+        add_block('simulink/Math Operations/Product', [parent_model_path, '/', dvy_prod_name], ...
+                  'Inputs', '2', ...
+                  'Position', [cb_x + sum_w + h_spacing + 40, cb_y_start_y_dir + 90, ...
+                               cb_x + sum_w + h_spacing + 60, cb_y_start_y_dir + 110]);
+        add_line(parent_model_path, [dvy_abs_name, '/1'], [dvy_prod_name, '/1']);
+        add_line(parent_model_path, [dvy_sum_name, '/1'], [dvy_prod_name, '/2']);
+        
+        c2y_gain_name = [conn_block_name_base, '_c2y_gain'];
+        add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', c2y_gain_name], ...
+                  'Gain', num2str(c2_y, '%.4g'), ...
+                  'Position', [cb_x + sum_w + h_spacing + 80, cb_y_start_y_dir + 90, ...
+                               cb_x + sum_w + h_spacing + 80 + gain_w, cb_y_start_y_dir + 110]);
+        add_line(parent_model_path, [dvy_prod_name, '/1'], [c2y_gain_name, '/1']);
     
+        % 7. 总力求和 (F = F_k + F_c + F_k3 + F_c2)
         f_conn_y_sum_name = [conn_block_name_base, '_F_conn_y_sum'];
-        f_conn_y_sum_x_pos = cb_x + sum_w + h_spacing + gain_w + h_spacing;
+        f_conn_y_sum_x_pos = cb_x + sum_w + h_spacing + gain_w + h_spacing + 50; % 向右移动
+        
         add_block('simulink/Math Operations/Sum', [parent_model_path, '/', f_conn_y_sum_name], ...
-                  'Inputs', '++', 'IconShape', 'rectangular', ...
+                  'Inputs', '++++', 'IconShape', 'rectangular', ... % 改为4个输入
                   'Position', [f_conn_y_sum_x_pos, cb_y_start_y_dir + sum_h + (15-sum_h)/2, ... 
-                               f_conn_y_sum_x_pos + sum_w, cb_y_start_y_dir + sum_h + (15+sum_h)/2]);
+                               f_conn_y_sum_x_pos + sum_w, cb_y_start_y_dir + sum_h + (15+sum_h)/2 + 40]); % 稍微拉高
+                               
         add_line(parent_model_path, [ky_gain_name, '/1'], [f_conn_y_sum_name, '/1']);
         add_line(parent_model_path, [cy_gain_name, '/1'], [f_conn_y_sum_name, '/2']);
+        add_line(parent_model_path, [k3y_gain_name, '/1'], [f_conn_y_sum_name, '/3']);
+        add_line(parent_model_path, [c2y_gain_name, '/1'], [f_conn_y_sum_name, '/4']);
         
+        % 连接到下游
         downstream_inport_y_name_local = ['F_conn', num2str(downstream_F_conn_pair_idx), '_y_in'];
         downstream_inport_y_full_path_local = [downstream_mass_path, '/', downstream_inport_y_name_local];
         downstream_port_num_y_str_local = get_param(downstream_inport_y_full_path_local, 'Port');
         downstream_F_conn_y_target_relport_str = [downstream_mass_rel_path, '/', downstream_port_num_y_str_local];
         add_line(parent_model_path, [f_conn_y_sum_name, '/1'], downstream_F_conn_y_target_relport_str);
     
+        % 8. 反作用力处理 (F_react = -F_conn)
         f_react_y_gain_name = [conn_block_name_base, '_F_react_y_negain']; 
         f_react_y_gain_x_pos = f_conn_y_sum_x_pos; 
         f_react_y_gain_y_pos = cb_y_start_y_dir - gain_h - 10; 
@@ -2728,45 +2832,96 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                      [upstream_reaction_target_rel_path, '/', upstream_port_num_y_react_str_local]);
         end
     
-        % --- Z方向连接逻辑 --- (与Y方向对称)
+        % =========================================================================
+        % --- Z方向连接逻辑 (Z-Direction Logic) ---
+        % =========================================================================
+        
+        % 1. 相对位移 dz
         dz_sum_name = [conn_block_name_base, '_dz_sum'];
         add_block('simulink/Math Operations/Sum', [parent_model_path, '/', dz_sum_name], 'Inputs', '+-', 'IconShape', 'rectangular', ...
                   'Position', [cb_x, cb_y_start_z_dir, cb_x + sum_w, cb_y_start_z_dir + sum_h]);
         add_line(parent_model_path, upstream_z_source_relport, [dz_sum_name, '/1']); 
         add_line(parent_model_path, [downstream_mass_rel_path, '/3'], [dz_sum_name, '/2']); 
     
+        % 2. 相对速度 dvz
         dvz_sum_name = [conn_block_name_base, '_dvz_sum'];
         add_block('simulink/Math Operations/Sum', [parent_model_path, '/', dvz_sum_name], 'Inputs', '+-', 'IconShape', 'rectangular', ...
                   'Position', [cb_x, cb_y_start_z_dir + sum_h + 15, cb_x + sum_w, cb_y_start_z_dir + sum_h*2 + 15]);
         add_line(parent_model_path, upstream_vz_source_relport, [dvz_sum_name, '/1']); 
         add_line(parent_model_path, [downstream_mass_rel_path, '/4'], [dvz_sum_name, '/2']); 
     
+        % 3. 线性刚度力 (k_z * dz)
         kz_gain_name = [conn_block_name_base, '_kz_gain'];
         add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', kz_gain_name], 'Gain', num2str(k_z, '%.4g'), ...
                   'Position', [cb_x + sum_w + h_spacing, cb_y_start_z_dir + (sum_h-gain_h)/2, ...
                                cb_x + sum_w + h_spacing + gain_w, cb_y_start_z_dir + (sum_h+gain_h)/2]);
         add_line(parent_model_path, [dz_sum_name, '/1'], [kz_gain_name, '/1']);
     
+        % 4. 线性阻尼力 (c_z * dvz)
         cz_gain_name = [conn_block_name_base, '_cz_gain'];
         add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', cz_gain_name], 'Gain', num2str(c_z, '%.4g'), ...
                   'Position', [cb_x + sum_w + h_spacing, cb_y_start_z_dir + sum_h + 15 + (sum_h-gain_h)/2, ...
                                cb_x + sum_w + h_spacing + gain_w, cb_y_start_z_dir + sum_h + 15 + (sum_h+gain_h)/2]);
         add_line(parent_model_path, [dvz_sum_name, '/1'], [cz_gain_name, '/1']);
     
+        % 5. 非线性刚度 (Duffing: k3_z * dz^3)
+        dz_pow3_name = [conn_block_name_base, '_dz_pow3'];
+        add_block('simulink/Math Operations/Math Function', [parent_model_path, '/', dz_pow3_name], ...
+                  'Function', 'pow', 'Operand', '3', ...
+                  'Position', [cb_x + sum_w + h_spacing, cb_y_start_z_dir + 55, ...
+                               cb_x + sum_w + h_spacing + gain_w, cb_y_start_z_dir + 75]);
+        add_line(parent_model_path, [dz_sum_name, '/1'], [dz_pow3_name, '/1']);
+        
+        k3z_gain_name = [conn_block_name_base, '_k3z_gain'];
+        add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', k3z_gain_name], ...
+                  'Gain', num2str(k3_z, '%.4g'), ...
+                  'Position', [cb_x + sum_w + h_spacing + 50, cb_y_start_z_dir + 55, ...
+                               cb_x + sum_w + h_spacing + 50 + gain_w, cb_y_start_z_dir + 75]);
+        add_line(parent_model_path, [dz_pow3_name, '/1'], [k3z_gain_name, '/1']);
+
+        % 6. 非线性阻尼 (c2_z * |dvz| * dvz)
+        dvz_abs_name = [conn_block_name_base, '_dvz_abs'];
+        add_block('simulink/Math Operations/Abs', [parent_model_path, '/', dvz_abs_name], ...
+                  'Position', [cb_x + sum_w + h_spacing, cb_y_start_z_dir + 90, ...
+                               cb_x + sum_w + h_spacing + 20, cb_y_start_z_dir + 110]);
+        add_line(parent_model_path, [dvz_sum_name, '/1'], [dvz_abs_name, '/1']);
+        
+        dvz_prod_name = [conn_block_name_base, '_dvz_prod'];
+        add_block('simulink/Math Operations/Product', [parent_model_path, '/', dvz_prod_name], ...
+                  'Inputs', '2', ...
+                  'Position', [cb_x + sum_w + h_spacing + 40, cb_y_start_z_dir + 90, ...
+                               cb_x + sum_w + h_spacing + 60, cb_y_start_z_dir + 110]);
+        add_line(parent_model_path, [dvz_abs_name, '/1'], [dvz_prod_name, '/1']);
+        add_line(parent_model_path, [dvz_sum_name, '/1'], [dvz_prod_name, '/2']);
+        
+        c2z_gain_name = [conn_block_name_base, '_c2z_gain'];
+        add_block('simulink/Commonly Used Blocks/Gain', [parent_model_path, '/', c2z_gain_name], ...
+                  'Gain', num2str(c2_z, '%.4g'), ...
+                  'Position', [cb_x + sum_w + h_spacing + 80, cb_y_start_z_dir + 90, ...
+                               cb_x + sum_w + h_spacing + 80 + gain_w, cb_y_start_z_dir + 110]);
+        add_line(parent_model_path, [dvz_prod_name, '/1'], [c2z_gain_name, '/1']);
+
+        % 7. 总力求和 (F = F_k + F_c + F_k3 + F_c2)
         f_conn_z_sum_name = [conn_block_name_base, '_F_conn_z_sum'];
-        f_conn_z_sum_x_pos = cb_x + sum_w + h_spacing + gain_w + h_spacing;
-        add_block('simulink/Math Operations/Sum', [parent_model_path, '/', f_conn_z_sum_name], 'Inputs', '++', 'IconShape', 'rectangular', ...
+        f_conn_z_sum_x_pos = cb_x + sum_w + h_spacing + gain_w + h_spacing + 50; % 同样右移
+        
+        add_block('simulink/Math Operations/Sum', [parent_model_path, '/', f_conn_z_sum_name], 'Inputs', '++++', 'IconShape', 'rectangular', ...
                   'Position', [f_conn_z_sum_x_pos, cb_y_start_z_dir + sum_h + (15-sum_h)/2, ...
-                               f_conn_z_sum_x_pos + sum_w, cb_y_start_z_dir + sum_h + (15+sum_h)/2]);
+                               f_conn_z_sum_x_pos + sum_w, cb_y_start_z_dir + sum_h + (15+sum_h)/2 + 40]);
+        
         add_line(parent_model_path, [kz_gain_name, '/1'], [f_conn_z_sum_name, '/1']);
         add_line(parent_model_path, [cz_gain_name, '/1'], [f_conn_z_sum_name, '/2']);
+        add_line(parent_model_path, [k3z_gain_name, '/1'], [f_conn_z_sum_name, '/3']);
+        add_line(parent_model_path, [c2z_gain_name, '/1'], [f_conn_z_sum_name, '/4']);
         
+        % 连接到下游
         downstream_inport_z_name_local = ['F_conn', num2str(downstream_F_conn_pair_idx), '_z_in'];
         downstream_inport_z_full_path_local = [downstream_mass_path, '/', downstream_inport_z_name_local];
         downstream_port_num_z_str_local = get_param(downstream_inport_z_full_path_local, 'Port');
         downstream_F_conn_z_target_relport_str = [downstream_mass_rel_path, '/', downstream_port_num_z_str_local];
         add_line(parent_model_path, [f_conn_z_sum_name, '/1'], downstream_F_conn_z_target_relport_str);
     
+        % 8. 反作用力处理
         f_react_z_gain_name = [conn_block_name_base, '_F_react_z_negain'];
         f_react_z_gain_x_pos = f_conn_z_sum_x_pos;
         f_react_z_gain_y_pos = cb_y_start_z_dir - gain_h - 10;
@@ -2818,137 +2973,237 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         % fprintf('  connect_elements_2D: 连接 "%s" 构建完成。\n', conn_block_name_base);
     end
     
-    %% connect_fruit_with_detachment_2D (最终语法修正版)
-    % 功能: 创建一个包含物理上更稳健、语法正确的脱落逻辑的果柄连接。
+    %% connect_fruit_with_detachment_2D (修正版 - 纯线性果柄)
+    % 功能: 创建一个包含线性动力学和脱落逻辑的果柄连接。
+    %       模型: F = k*x + c*v (直到达到 F_break 脱落)
+    %       修正: 移除了所有关于果柄非线性(k3, c2)的计算逻辑，强制为线性。
     function connect_fruit_with_detachment_2D(parent_model_path, tip_mass_path, fruit_mass_path, ...
                                               fruit_unique_id, fruit_params, gravity_g_val, ...
                                               tip_F_react_conn_pair_idx, fruit_F_conn_pair_idx, ...
                                               conn_block_base_pos_xy)
         global fruit_signal_manager_global;
-    
+        
+        % --- 1. 提取果柄参数 (仅线性) ---
+        kp_y = fruit_params.k_pedicel_y;
+        cp_y = fruit_params.c_pedicel_y;
+        kp_z = fruit_params.k_pedicel_z;
+        cp_z = fruit_params.c_pedicel_z;
+        
         % --- 创建脱落逻辑子系统 ---
         logic_subsystem_name_base = matlab.lang.makeValidName([fruit_unique_id, '_DetachmentLogic']);
         logic_subsystem_path_tentative = [parent_model_path, '/', logic_subsystem_name_base];
-        logic_ss_width = 450; logic_ss_height = 350; % 稍微调大一点高度
-        logic_ss_pos = [conn_block_base_pos_xy(1), conn_block_base_pos_xy(2), conn_block_base_pos_xy(1) + logic_ss_width, conn_block_base_pos_xy(2) + logic_ss_height];
-        add_block('simulink/Ports & Subsystems/Subsystem', logic_subsystem_path_tentative, 'Position', logic_ss_pos, 'MakeNameUnique', 'on');
+        logic_ss_width = 450; logic_ss_height = 400; 
+        logic_ss_pos = [conn_block_base_pos_xy(1), conn_block_base_pos_xy(2), ...
+                        conn_block_base_pos_xy(1) + logic_ss_width, conn_block_base_pos_xy(2) + logic_ss_height];
+        
+        add_block('simulink/Ports & Subsystems/Subsystem', logic_subsystem_path_tentative, ...
+                  'Position', logic_ss_pos, 'MakeNameUnique', 'on');
         logic_subsystem_actual_path = get_param(logic_subsystem_path_tentative, 'Object').getFullName();
         clean_subsystem_internals(logic_subsystem_actual_path);
     
         % --- 定义脱落逻辑子系统的输入和输出端口 ---
         input_port_names_logic  = {'y_tip_in', 'vy_tip_in', 'z_tip_in', 'vz_tip_in', 'y_fruit_in', 'vy_fruit_in', 'z_fruit_in', 'vz_fruit_in'};
         output_port_names_logic = {'F_to_fruit_y_out', 'F_to_fruit_z_out', 'F_to_tip_y_out', 'F_to_tip_z_out', 'Detached_Status_out', 'F_pedicel_magnitude_out'};
-        in_port_x_logic = 30; in_port_y_start_logic = 30; in_port_w_logic = 30; in_port_h_logic = 18; in_port_v_spacing_logic = 25;
+        
+        in_port_x = 30; in_port_y_start = 30; in_port_w = 30; in_port_h = 18; in_port_spacing = 30;
         for i_in = 1:length(input_port_names_logic)
-            add_block('simulink/Sources/In1', [logic_subsystem_actual_path, '/', input_port_names_logic{i_in}], 'Port', num2str(i_in), 'Position', [in_port_x_logic, in_port_y_start_logic + (i_in-1)*in_port_v_spacing_logic, in_port_x_logic + in_port_w_logic, in_port_y_start_logic + (i_in-1)*in_port_v_spacing_logic + in_port_h_logic]);
+            add_block('simulink/Sources/In1', [logic_subsystem_actual_path, '/', input_port_names_logic{i_in}], ...
+                      'Port', num2str(i_in), ...
+                      'Position', [in_port_x, in_port_y_start + (i_in-1)*in_port_spacing, ...
+                                   in_port_x + in_port_w, in_port_y_start + (i_in-1)*in_port_spacing + in_port_h]);
         end
-        out_port_x_logic = logic_ss_width - 50; out_port_y_start_logic = 30; out_port_w_logic = 30; out_port_h_logic = 18; out_port_v_spacing_logic = 25;
+        
+        out_port_x = logic_ss_width - 60; out_port_y_start = 30; out_port_w = 30; out_port_h = 18; out_port_spacing = 30;
         for i_out = 1:length(output_port_names_logic)
-            add_block('simulink/Sinks/Out1', [logic_subsystem_actual_path, '/', output_port_names_logic{i_out}], 'Port', num2str(i_out), 'Position', [out_port_x_logic, out_port_y_start_logic + (i_out-1)*out_port_v_spacing_logic, out_port_x_logic + out_port_w_logic, out_port_y_start_logic + (i_out-1)*out_port_v_spacing_logic + out_port_h_logic]);
+            add_block('simulink/Sinks/Out1', [logic_subsystem_actual_path, '/', output_port_names_logic{i_out}], ...
+                      'Port', num2str(i_out), ...
+                      'Position', [out_port_x, out_port_y_start + (i_out-1)*out_port_spacing, ...
+                                   out_port_x + out_port_w, out_port_y_start + (i_out-1)*out_port_spacing + out_port_h]);
         end
     
-        % --- 构建脱落逻辑子系统内部的详细逻辑 ---
+        % =========================================================================
+        % --- 构建脱落逻辑子系统内部详细逻辑 (纯线性) ---
+        % =========================================================================
         
-        % 1. 计算相对位移和速度 (dy, dvy, dz, dvz)
-        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dy_sum'], 'Inputs', '+-', 'Position', [100 40 120 60]); add_line(logic_subsystem_actual_path, 'y_tip_in/1', 'dy_sum/1'); add_line(logic_subsystem_actual_path, 'y_fruit_in/1', 'dy_sum/2');
-        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dvy_sum'], 'Inputs', '+-', 'Position', [100 70 120 90]); add_line(logic_subsystem_actual_path, 'vy_tip_in/1', 'dvy_sum/1'); add_line(logic_subsystem_actual_path, 'vy_fruit_in/1', 'dvy_sum/2');
-        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dz_sum'], 'Inputs', '+-', 'Position', [100 100 120 120]); add_line(logic_subsystem_actual_path, 'z_tip_in/1', 'dz_sum/1'); add_line(logic_subsystem_actual_path, 'z_fruit_in/1', 'dz_sum/2');
-        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dvz_sum'], 'Inputs', '+-', 'Position', [100 130 120 150]); add_line(logic_subsystem_actual_path, 'vz_tip_in/1', 'dvz_sum/1'); add_line(logic_subsystem_actual_path, 'vz_fruit_in/1', 'dvz_sum/2');
+        % 1. 计算相对位移和速度 (Tip - Fruit)
+        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dy_sum'], 'Inputs', '+-', 'Position', [100 40 120 60]);
+        add_line(logic_subsystem_actual_path, 'y_tip_in/1', 'dy_sum/1');
+        add_line(logic_subsystem_actual_path, 'y_fruit_in/1', 'dy_sum/2');
+        
+        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dvy_sum'], 'Inputs', '+-', 'Position', [100 80 120 100]);
+        add_line(logic_subsystem_actual_path, 'vy_tip_in/1', 'dvy_sum/1');
+        add_line(logic_subsystem_actual_path, 'vy_fruit_in/1', 'dvy_sum/2');
+        
+        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dz_sum'], 'Inputs', '+-', 'Position', [100 120 120 140]);
+        add_line(logic_subsystem_actual_path, 'z_tip_in/1', 'dz_sum/1');
+        add_line(logic_subsystem_actual_path, 'z_fruit_in/1', 'dz_sum/2');
+        
+        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/dvz_sum'], 'Inputs', '+-', 'Position', [100 160 120 180]);
+        add_line(logic_subsystem_actual_path, 'vz_tip_in/1', 'dvz_sum/1');
+        add_line(logic_subsystem_actual_path, 'vz_fruit_in/1', 'dvz_sum/2');
     
-        % 2. 无条件计算Y和Z方向的潜在连接力 (F_unbroken)
-        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/ky_gain'], 'Gain', num2str(fruit_params.k_pedicel_y)); add_line(logic_subsystem_actual_path, 'dy_sum/1', 'ky_gain/1');
-        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/cy_gain'], 'Gain', num2str(fruit_params.c_pedicel_y)); add_line(logic_subsystem_actual_path, 'dvy_sum/1', 'cy_gain/1');
-        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/Fy_unbroken'], 'Inputs', '++'); add_line(logic_subsystem_actual_path, 'ky_gain/1', 'Fy_unbroken/1'); add_line(logic_subsystem_actual_path, 'cy_gain/1', 'Fy_unbroken/2');
+        % -------------------------------------------------------------------------
+        % 2. Y方向力计算 (纯线性: F = k*x + c*v)
+        % -------------------------------------------------------------------------
         
-        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/kz_gain'], 'Gain', num2str(fruit_params.k_pedicel_z)); add_line(logic_subsystem_actual_path, 'dz_sum/1', 'kz_gain/1');
-        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/cz_gain'], 'Gain', num2str(fruit_params.c_pedicel_z)); add_line(logic_subsystem_actual_path, 'dvz_sum/1', 'cz_gain/1');
-        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/Fz_unbroken'], 'Inputs', '++'); add_line(logic_subsystem_actual_path, 'kz_gain/1', 'Fz_unbroken/1'); add_line(logic_subsystem_actual_path, 'cz_gain/1', 'Fz_unbroken/2');
+        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/ky_gain'], 'Gain', num2str(kp_y, '%.4g'), 'Position', [160 35 190 55]);
+        add_line(logic_subsystem_actual_path, 'dy_sum/1', 'ky_gain/1');
+        
+        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/cy_gain'], 'Gain', num2str(cp_y, '%.4g'), 'Position', [160 75 190 95]);
+        add_line(logic_subsystem_actual_path, 'dvy_sum/1', 'cy_gain/1');
+        
+        % Y向总力求和 (2输入)
+        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/Fy_unbroken'], 'Inputs', '++', 'Position', [240 40 260 80]);
+        add_line(logic_subsystem_actual_path, 'ky_gain/1', 'Fy_unbroken/1');
+        add_line(logic_subsystem_actual_path, 'cy_gain/1', 'Fy_unbroken/2');
+        
+        % -------------------------------------------------------------------------
+        % 3. Z方向力计算 (纯线性: F = k*x + c*v)
+        % -------------------------------------------------------------------------
+        
+        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/kz_gain'], 'Gain', num2str(kp_z, '%.4g'), 'Position', [160 115 190 135]);
+        add_line(logic_subsystem_actual_path, 'dz_sum/1', 'kz_gain/1');
+        
+        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/cz_gain'], 'Gain', num2str(cp_z, '%.4g'), 'Position', [160 155 190 175]);
+        add_line(logic_subsystem_actual_path, 'dvz_sum/1', 'cz_gain/1');
     
-        % 3. 计算总力的幅值，用于脱落判断
-        add_block('simulink/Math Operations/Math Function', [logic_subsystem_actual_path, '/Fy_sq'], 'Function', 'square'); add_line(logic_subsystem_actual_path, 'Fy_unbroken/1', 'Fy_sq/1');
-        add_block('simulink/Math Operations/Math Function', [logic_subsystem_actual_path, '/Fz_sq'], 'Function', 'square'); add_line(logic_subsystem_actual_path, 'Fz_unbroken/1', 'Fz_sq/1');
-        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/Sum_sq'], 'Inputs', '++'); add_line(logic_subsystem_actual_path, 'Fy_sq/1', 'Sum_sq/1'); add_line(logic_subsystem_actual_path, 'Fz_sq/1', 'Sum_sq/2');
-        add_block('simulink/Math Operations/Math Function', [logic_subsystem_actual_path, '/F_mag_sqrt'], 'Function', 'sqrt'); add_line(logic_subsystem_actual_path, 'Sum_sq/1', 'F_mag_sqrt/1');
+        % Z向总力求和 (2输入)
+        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/Fz_unbroken'], 'Inputs', '++', 'Position', [240 120 260 160]);
+        add_line(logic_subsystem_actual_path, 'kz_gain/1', 'Fz_unbroken/1');
+        add_line(logic_subsystem_actual_path, 'cz_gain/1', 'Fz_unbroken/2');
+    
+        % -------------------------------------------------------------------------
+        % 4. 计算总力的幅值，用于脱落判断 (F_mag = sqrt(Fy^2 + Fz^2))
+        % -------------------------------------------------------------------------
+        add_block('simulink/Math Operations/Math Function', [logic_subsystem_actual_path, '/Fy_sq'], 'Function', 'square', 'Position', [280 50 300 70]);
+        add_line(logic_subsystem_actual_path, 'Fy_unbroken/1', 'Fy_sq/1');
         
-        % 4. 脱落状态判断与锁定 (Latch)
+        add_block('simulink/Math Operations/Math Function', [logic_subsystem_actual_path, '/Fz_sq'], 'Function', 'square', 'Position', [280 130 300 150]);
+        add_line(logic_subsystem_actual_path, 'Fz_unbroken/1', 'Fz_sq/1');
+        
+        add_block('simulink/Math Operations/Sum', [logic_subsystem_actual_path, '/Sum_sq'], 'Inputs', '++', 'Position', [320 80 340 120]);
+        add_line(logic_subsystem_actual_path, 'Fy_sq/1', 'Sum_sq/1');
+        add_line(logic_subsystem_actual_path, 'Fz_sq/1', 'Sum_sq/2');
+        
+        add_block('simulink/Math Operations/Math Function', [logic_subsystem_actual_path, '/F_mag_sqrt'], 'Function', 'sqrt', 'Position', [360 90 380 110]);
+        add_line(logic_subsystem_actual_path, 'Sum_sq/1', 'F_mag_sqrt/1');
+        
+        % -------------------------------------------------------------------------
+        % 5. 脱落状态判断与锁定 (Latch)
+        % -------------------------------------------------------------------------
         f_break_val = fruit_params.F_break;
-        add_block('simulink/Discontinuities/Relay', [logic_subsystem_actual_path, '/Detachment_Relay'], 'OnSwitchValue', num2str(f_break_val), 'OffSwitchValue', num2str(f_break_val * 0.95), 'OnOutputValue', '1', 'OffOutputValue', '0', 'Position', [180 250 220 280]);
-        add_block('simulink/Discrete/Memory', [logic_subsystem_actual_path, '/Detached_Status_Latch'], 'InheritSampleTime', 'on', 'Position', [240 250 270 280]);
+        % Relay: 超过 F_break 输出 1
+        add_block('simulink/Discontinuities/Relay', [logic_subsystem_actual_path, '/Detachment_Relay'], ...
+                  'OnSwitchValue', num2str(f_break_val), 'OffSwitchValue', num2str(f_break_val * 0.95), ...
+                  'OnOutputValue', '1', 'OffOutputValue', '0', 'Position', [400 250 430 280]);
+        
+        % Memory 模块实现简单的锁存效果
+        add_block('simulink/Discrete/Memory', [logic_subsystem_actual_path, '/Detached_Status_Latch'], ...
+                  'InheritSampleTime', 'on', 'Position', [450 250 480 280]);
+        
         add_line(logic_subsystem_actual_path, 'F_mag_sqrt/1', 'Detachment_Relay/1');
         add_line(logic_subsystem_actual_path, 'Detachment_Relay/1', 'Detached_Status_Latch/1');
         
-        % 5. 将状态和力幅值连接到输出
+        % 输出状态
         add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Detached_Status_out/1');
         add_line(logic_subsystem_actual_path, 'F_mag_sqrt/1', 'F_pedicel_magnitude_out/1');
     
-        % 6. 使用开关直接切换最终输出的力
-        % 创建一个Constant模块，其值为脱落后作用在Y方向的力，即重力
+        % -------------------------------------------------------------------------
+        % 6. 力输出切换逻辑 (脱落 vs 未脱落)
+        % -------------------------------------------------------------------------
+        
+        % 常数：脱落后的力 (重力作用于果实)
         add_block('simulink/Sources/Constant', [logic_subsystem_actual_path, '/GravityForce_Y'], ...
-              'Value', num2str(-fruit_params.m * gravity_g_val, '%.4g')); % <-- m*g, 注意是负值
+              'Value', num2str(-fruit_params.m * gravity_g_val, '%.4g'), 'Position', [300 20 330 40]);
+        
         zero_force_name = 'ZeroForce';
-        add_block('simulink/Sources/Constant', [logic_subsystem_actual_path, '/', zero_force_name], 'Value', '0');
+        add_block('simulink/Sources/Constant', [logic_subsystem_actual_path, '/', zero_force_name], 'Value', '0', 'Position', [300 180 330 200]);
         
-        % Y方向力的开关
-        add_block('simulink/Signal Routing/Switch', [logic_subsystem_actual_path, '/Switch_Force_Y'], 'Criteria', 'u2 > Threshold', 'Threshold', '0.5', 'Position', [300 40 340 80]);
-        add_line(logic_subsystem_actual_path, 'GravityForce_Y/1', 'Switch_Force_Y/1');  % u1: 如果脱落(u2>0.5)，通过u1 (GravityForce_Y)
-        add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Switch_Force_Y/2'); % u2: 控制信号
-        add_line(logic_subsystem_actual_path, 'Fy_unbroken/1', 'Switch_Force_Y/3');          % u3: 如果未脱落(u2<=0.5)，通过u3 (F_unbroken)
-        
-        % Y方向力的开关 (脱落后Y方向不受力)
-        add_block('simulink/Signal Routing/Switch', [logic_subsystem_actual_path, '/Switch_Reaction_Y'], 'Criteria', 'u2 > Threshold', 'Threshold', '0.5', 'Position', [300 160 340 200]);
-        add_line(logic_subsystem_actual_path, 'ZeroForce/1', 'Switch_Reaction_Y/1');        % 脱落: 0
-        add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Switch_Reaction_Y/2');
-        add_line(logic_subsystem_actual_path, 'Fy_unbroken/1', 'Switch_Reaction_Y/3');      % 未脱落: 弹簧力
-        
-        % Z方向力的开关 (脱落后Z方向不受力)
-        % Switch_Reaction_Z
-        add_block('simulink/Signal Routing/Switch', [logic_subsystem_actual_path, '/Switch_Reaction_Z'], 'Criteria', 'u2 > Threshold', 'Threshold', '0.5', 'Position', [300 220 340 260]);
-        add_line(logic_subsystem_actual_path, 'ZeroForce/1', 'Switch_Reaction_Z/1');        % 脱落: 0
-        add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Switch_Reaction_Z/2');
-        add_line(logic_subsystem_actual_path, 'Fz_unbroken/1', 'Switch_Reaction_Z/3');      % 未脱落: 弹簧力
-    
-        % 7. 将切换后的最终作用力连接到输出
+        % --- A. 作用于果实的力 (F_to_fruit) ---
+        % Y方向: 未脱落 -> Fy_unbroken; 脱落 -> Gravity (mg)
+        add_block('simulink/Signal Routing/Switch', [logic_subsystem_actual_path, '/Switch_Force_Y'], ...
+                  'Criteria', 'u2 > Threshold', 'Threshold', '0.5', 'Position', [500 40 540 80]);
+        add_line(logic_subsystem_actual_path, 'GravityForce_Y/1', 'Switch_Force_Y/1');  % u1 (Detached)
+        add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Switch_Force_Y/2');
+        add_line(logic_subsystem_actual_path, 'Fy_unbroken/1', 'Switch_Force_Y/3');     % u3 (Attached)
         add_line(logic_subsystem_actual_path, 'Switch_Force_Y/1', 'F_to_fruit_y_out/1');
+        
+        % Z方向: 未脱落 -> Fz_unbroken; 脱落 -> 0
+        add_block('simulink/Signal Routing/Switch', [logic_subsystem_actual_path, '/Switch_Force_Z'], ...
+                  'Criteria', 'u2 > Threshold', 'Threshold', '0.5', 'Position', [500 120 540 160]);
+        add_line(logic_subsystem_actual_path, 'ZeroForce/1', 'Switch_Force_Z/1');       % u1 (Detached)
+        add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Switch_Force_Z/2');
+        add_line(logic_subsystem_actual_path, 'Fz_unbroken/1', 'Switch_Force_Z/3');     % u3 (Attached)
         add_line(logic_subsystem_actual_path, 'Switch_Force_Z/1', 'F_to_fruit_z_out/1');
         
-        % 8. 计算并连接反作用力
-        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/Negate_Fy'], 'Gain', '-1'); 
+        % --- B. 作用于 Tip 的反作用力 (F_to_tip = -F_conn) ---
+        
+        % Y方向反作用力
+        add_block('simulink/Signal Routing/Switch', [logic_subsystem_actual_path, '/Switch_Reaction_Y'], ...
+                  'Criteria', 'u2 > Threshold', 'Threshold', '0.5', 'Position', [500 200 540 240]);
+        add_line(logic_subsystem_actual_path, 'ZeroForce/1', 'Switch_Reaction_Y/1');        % u1 (Detached -> 0)
+        add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Switch_Reaction_Y/2');
+        add_line(logic_subsystem_actual_path, 'Fy_unbroken/1', 'Switch_Reaction_Y/3');      % u3 (Attached -> F)
+        
+        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/Negate_Fy'], 'Gain', '-1', 'Position', [560 210 590 230]); 
         add_line(logic_subsystem_actual_path, 'Switch_Reaction_Y/1', 'Negate_Fy/1'); 
         add_line(logic_subsystem_actual_path, 'Negate_Fy/1', 'F_to_tip_y_out/1');
         
-        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/Negate_Fz'], 'Gain', '-1'); 
+        % Z方向反作用力
+        add_block('simulink/Signal Routing/Switch', [logic_subsystem_actual_path, '/Switch_Reaction_Z'], ...
+                  'Criteria', 'u2 > Threshold', 'Threshold', '0.5', 'Position', [500 280 540 320]);
+        add_line(logic_subsystem_actual_path, 'ZeroForce/1', 'Switch_Reaction_Z/1');        % u1 (Detached -> 0)
+        add_line(logic_subsystem_actual_path, 'Detached_Status_Latch/1', 'Switch_Reaction_Z/2');
+        add_line(logic_subsystem_actual_path, 'Fz_unbroken/1', 'Switch_Reaction_Z/3');      % u3 (Attached -> F)
+    
+        add_block('simulink/Commonly Used Blocks/Gain', [logic_subsystem_actual_path, '/Negate_Fz'], 'Gain', '-1', 'Position', [560 290 590 310]); 
         add_line(logic_subsystem_actual_path, 'Switch_Reaction_Z/1', 'Negate_Fz/1'); 
         add_line(logic_subsystem_actual_path, 'Negate_Fz/1', 'F_to_tip_z_out/1');
     
-        % 自动整理子系统内部布局
+        % 自动整理
         Simulink.BlockDiagram.arrangeSystem(logic_subsystem_actual_path);
     
-        % --- 外部连接和记录 (这部分代码保持不变) ---
+        % =========================================================================
+        % --- 外部连接和记录 (保持原逻辑不变) ---
+        % =========================================================================
         logic_subsystem_rel_path = strrep(logic_subsystem_actual_path, [parent_model_path, '/'], '');
         tip_mass_rel_path = strrep(tip_mass_path, [parent_model_path, '/'], '');
         fruit_mass_rel_path = strrep(fruit_mass_path, [parent_model_path, '/'], '');
+        
+        % 连接输入状态
         for i_state = 1:4
             add_line(parent_model_path, [tip_mass_rel_path, '/', num2str(i_state)], [logic_subsystem_rel_path, '/', num2str(i_state)]);
             add_line(parent_model_path, [fruit_mass_rel_path, '/', num2str(i_state)], [logic_subsystem_rel_path, '/', num2str(i_state + 4)]);
         end
+        
+        % 连接输出力
         fruit_inport_y_name_f = ['F_conn', num2str(fruit_F_conn_pair_idx), '_y_in']; fruit_port_num_y_f = get_param([fruit_mass_path, '/', fruit_inport_y_name_f], 'Port');
         add_line(parent_model_path, [logic_subsystem_rel_path, '/1'], [fruit_mass_rel_path, '/', fruit_port_num_y_f]);
+        
         fruit_inport_z_name_f = ['F_conn', num2str(fruit_F_conn_pair_idx), '_z_in']; fruit_port_num_z_f = get_param([fruit_mass_path, '/', fruit_inport_z_name_f], 'Port');
         add_line(parent_model_path, [logic_subsystem_rel_path, '/2'], [fruit_mass_rel_path, '/', fruit_port_num_z_f]);
+        
         tip_inport_y_name_t = ['F_conn', num2str(tip_F_react_conn_pair_idx), '_y_in']; tip_port_num_y_t = get_param([tip_mass_path, '/', tip_inport_y_name_t], 'Port');
         add_line(parent_model_path, [logic_subsystem_rel_path, '/3'], [tip_mass_rel_path, '/', tip_port_num_y_t]);
+        
         tip_inport_z_name_t = ['F_conn', num2str(tip_F_react_conn_pair_idx), '_z_in']; tip_port_num_z_t = get_param([tip_mass_path, '/', tip_inport_z_name_t], 'Port');
         add_line(parent_model_path, [logic_subsystem_rel_path, '/4'], [tip_mass_rel_path, '/', tip_port_num_z_t]);
+        
+        % 记录数据
         ws_block_y_start_fruit = conn_block_base_pos_xy(2) + logic_ss_height + 10;
         ws_block_width = 150; ws_block_height = 20; ws_block_spacing = 5;
+        
         detached_status_varname_ws = matlab.lang.makeValidName([fruit_unique_id, '_DetachedStatus']);
         ws_block_path_detached_status = [parent_model_path, '/', detached_status_varname_ws, '_ToWs'];
         add_block('simulink/Sinks/To Workspace', ws_block_path_detached_status, 'VariableName', detached_status_varname_ws, 'SaveFormat', 'Timeseries', 'SampleTime', '-1', 'Position', [conn_block_base_pos_xy(1) + logic_ss_width/2 - ws_block_width/2, ws_block_y_start_fruit, conn_block_base_pos_xy(1) + logic_ss_width/2 + ws_block_width/2, ws_block_y_start_fruit + ws_block_height]);
         add_line(parent_model_path, [logic_subsystem_rel_path, '/5'], [strrep(ws_block_path_detached_status, [parent_model_path, '/'], ''), '/1']);
+        
         fped_mag_varname_ws = matlab.lang.makeValidName([fruit_unique_id, '_PedicelForceMag']);
         ws_block_path_fped_mag = [parent_model_path, '/', fped_mag_varname_ws, '_ToWs'];
         add_block('simulink/Sinks/To Workspace', ws_block_path_fped_mag, 'VariableName', fped_mag_varname_ws, 'SaveFormat', 'Timeseries', 'SampleTime', '-1', 'Position', [conn_block_base_pos_xy(1) + logic_ss_width/2 - ws_block_width/2, ws_block_y_start_fruit + ws_block_height + ws_block_spacing, conn_block_base_pos_xy(1) + logic_ss_width/2 + ws_block_width/2, ws_block_y_start_fruit + ws_block_height*2 + ws_block_spacing]);
         add_line(parent_model_path, [logic_subsystem_rel_path, '/6'], [strrep(ws_block_path_fped_mag, [parent_model_path, '/'], ''), '/1']);
+        
+        % 注册信号
         current_fruit_signal_entry = struct('unique_id', fruit_unique_id, 'y_disp_varname', matlab.lang.makeValidName([fruit_unique_id, '_y_displacement']), 'z_disp_varname', matlab.lang.makeValidName([fruit_unique_id, '_z_displacement']), 'y_accel_varname', matlab.lang.makeValidName([fruit_unique_id, '_y_acceleration']), 'z_accel_varname', matlab.lang.makeValidName([fruit_unique_id, '_z_acceleration']), 'detached_status_varname', detached_status_varname_ws, 'fped_mag_varname', fped_mag_varname_ws);
         existing_ids = cellfun(@(x) x.unique_id, fruit_signal_manager_global, 'UniformOutput', false);
         if ~any(strcmp(existing_ids, fruit_unique_id))
@@ -2958,41 +3213,24 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         end
     end
     
-    %% build_branch_recursively (已修正)
+    %% build_branch_recursively (适配非线性连接)
     % 功能: (核心递归函数) 构建一个分枝子系统 (主干、一级、二级或三级分枝)。
     %       一个分枝通常由根(root)、中(mid)、尖(tip)三段质量块组成，它们之间通过弹簧阻尼器连接。
     %       分枝的根段连接到其父级元件 (固定基座、或上层分枝的尖端)。
     %       分枝的尖端可以进一步分出下一级子分枝，或者直接挂果。
     %       此函数会递归调用自身来构建子分枝。
+    %
     % 输入参数:
-    %   model_base_path (char/string): 顶层Simulink模型的名称。
-    %   parent_subsystem_full_path_providing_state (char/string):
-    %                                 提供状态输入 (y,vy,z,vz via a Bus) 的父级模块/子系统的完整路径。
-    %                                 对于主干，这是固定基座FixedBase的路径。
-    %                                 对于子分枝，这是其父分枝子系统的路径 (指向其TipState_ExternalOut总线)。
-    %   parent_reaction_force_target_full_path (char/string):
-    %                                 当前构建的分枝的根段所产生的反作用力应该施加到的父级元件的完整路径。
-    %                                 对于主干，这是固定基座FixedBase的路径。
-    %                                 对于子分枝，这是其父分枝的尖端质量块(Tip_Mass)的路径。
-    %   parent_reaction_force_port_spec_y (char/string or double):
-    %   parent_reaction_force_port_spec_z (char/string or double):
-    %                                 指定如何将反作用力连接回父级。
-    %                                 - 如果连接到FixedBase (branch_level=0): (此参数现在主要用于指引FixedBase上的Inport名)
-    %                                   在旧逻辑中，这曾被用作Trunk内Outport的名称。新逻辑中，Trunk会定义自己的Outport名。
-    %                                 - 如果连接到父分枝的Tip_Mass (branch_level>0): 它们是父Tip_Mass上F_connX_y/z_in的*索引号*。
-    %   branch_level (int):           当前正在构建的分枝的层级 (0=主干, 1=一级, 2=二级, 3=三级)。
-    %   branch_indices (double array):一个数组，包含从主干到当前分枝的各层级索引。
-    %                                 例如，[1, 2] 表示一级分枝P1下的二级分枝S2。主干时为空[]。
-    %   model_build_params_struct (struct): 包含完整模型参数的结构体 (config, parameters.trunk/primary/..., gravity_g)。
-    %   layout_params_struct (struct):      包含Simulink模块布局参数的结构体。
-    %   base_pos_xy (double array):   [x, y] 当前分枝子系统左上角的建议绘制起始坐标。
-    %   current_branch_subsystem_full_path_tentative_in (char/string):
-    %                                                                 当前分枝子系统的建议完整路径。函数内部会用此创建。
-    % 输出参数: 无
-    % 全局变量:
-    %   excitation_targets_global: (修改)
-    %   current_y_level_global:    (修改/使用)
-    %   fruit_signal_manager_global: (修改)
+    %   model_base_path: 顶层Simulink模型的名称。
+    %   parent_subsystem_full_path_providing_state: 提供状态输入的父级模块路径。
+    %   parent_reaction_force_target_full_path: 反作用力目标路径。
+    %   parent_reaction_force_port_spec_y/z: 反作用力端口规格。
+    %   branch_level: 当前分枝层级 (0=Trunk)。
+    %   branch_indices: 分枝索引数组。
+    %   model_build_params_struct: 完整模型参数结构体。
+    %   layout_params_struct: 布局参数。
+    %   base_pos_xy: 起始坐标。
+    %   current_branch_subsystem_full_path_tentative_in: 建议路径。
     function build_branch_recursively(model_base_path, ...
                                       parent_subsystem_full_path_providing_state, ...
                                       parent_reaction_force_target_full_path, ...
@@ -3005,24 +3243,32 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         global current_y_level_global; 
         global fruit_signal_manager_global;
     
-        % ***  获取初始条件映射表 ***
+        % *** 获取初始条件映射表 ***
         ic_map = containers.Map(); % 默认空表
         if isfield(model_build_params_struct, 'initial_conditions')
             ic_map = model_build_params_struct.initial_conditions;
         end
         
          % *** 在此处定义 get_ic_strings 作为嵌套函数 ***
-        % 这样它就可以访问其父函数 build_branch_recursively 的工作区，特别是 ic_map 变量。
         function [y_ic_str, z_ic_str] = get_ic_strings(mass_id)
             if isKey(ic_map, mass_id)
                 ic_struct = ic_map(mass_id);
-                % 使用 %.8g 格式化，确保数值精度且避免不必要的科学记数法
                 y_ic_str = num2str(ic_struct.y_ic, '%.8g');
                 z_ic_str = num2str(ic_struct.z_ic, '%.8g');
             else
                 y_ic_str = '0';
                 z_ic_str = '0';
-                warning('build_branch_recursively: 在 initial_conditions_map 中未找到质量点 "%s" 的初始条件，将使用默认值 0。', mass_id);
+                % warning('build_branch_recursively: 在 initial_conditions_map 中未找到质量点 "%s" 的初始条件，将使用默认值 0。', mass_id);
+            end
+        end
+
+        % *** [新增] 辅助函数：安全获取非线性参数 ***
+        % 如果参数结构体中包含 k3/c2 则提取，否则返回 0
+        function val = safe_get_param(struct_obj, field_name)
+            if isfield(struct_obj, field_name)
+                val = struct_obj.(field_name);
+            else
+                val = 0; 
             end
         end
     
@@ -3032,9 +3278,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         end
     
         branch_segment_names = {'root', 'mid', 'tip'}; 
-        current_branch_params = struct(); 
         valid_params_found = true;        
-        path_id_str_for_names = '';       
     
         if branch_level == 0
             path_id_str_for_names = 'Trunk';
@@ -3094,7 +3338,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                   'Position', [base_pos_xy(1), actual_subsystem_base_pos_y, ...
                                base_pos_xy(1) + layout_params_struct.subsystem_width, ...
                                actual_subsystem_base_pos_y + current_branch_subsystem_height], ...
-                  'MakeNameUnique', 'on'); % 移除了 'BackgroundColor'
+                  'MakeNameUnique', 'on'); 
         current_branch_subsystem_actual_full_path = get_param(current_branch_subsystem_path_to_create, 'Object').getFullName();
         clean_subsystem_internals(current_branch_subsystem_actual_full_path);
     
@@ -3126,35 +3370,28 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         % --- 创建当前分支的反作用力输出端口 ---
         outport_for_reaction_to_parent_Y_name = ''; 
         outport_for_reaction_to_parent_Z_name = ''; 
-        % TipState_ExternalOut 将会是第1个Outport，所以其他Outport从Port '2' 开始。
-        % current_branch_next_available_outport_num 在此上下文中指除了TipState_ExternalOut之外的下一个可用端口号。
-        next_general_outport_number_in_branch = 1; % Start with 1 for TipState_ExternalOut, then increment
+        next_general_outport_number_in_branch = 1; 
     
         react_outport_x_pos_inside_branch = layout_params_struct.subsystem_width - layout_params_struct.general_outport_width - 50;
         react_outport_y_pos_start_inside_branch = 150; 
     
         if branch_level == 0 
-            % 主干的反作用力Outport名称定义。这些将在connect_elements_2D中被创建。
             outport_for_reaction_to_parent_Y_name = 'Trunk_ReactForce_Y_Out'; 
             outport_for_reaction_to_parent_Z_name = 'Trunk_ReactForce_Z_Out'; 
-            % TipState_ExternalOut将使用端口 '1'. connect_elements_2D(is_upstream_fixed=true) 
-            % 会负责创建名为Trunk_ReactForce_Y/Z_Out的Outport，并自动获取后续可用端口号。
-            % 所以此处无需预先增加 next_general_outport_number_in_branch
         elseif branch_level > 0 
             outport_for_reaction_to_parent_Y_name = matlab.lang.makeValidName([path_id_str_for_names, '_ReactToParent_Y_Out']);
             outport_for_reaction_to_parent_Z_name = matlab.lang.makeValidName([path_id_str_for_names, '_ReactToParent_Z_Out']);
             
             add_block('simulink/Sinks/Out1', [current_branch_subsystem_actual_full_path, '/', outport_for_reaction_to_parent_Y_name], ...
-                      'Port', num2str(next_general_outport_number_in_branch + 1), ... % Port '2'
+                      'Port', num2str(next_general_outport_number_in_branch + 1), ... 
                       'Position', [react_outport_x_pos_inside_branch, react_outport_y_pos_start_inside_branch, ...
                                    react_outport_x_pos_inside_branch + layout_params_struct.general_outport_width, ...
                                    react_outport_y_pos_start_inside_branch + layout_params_struct.general_outport_height]);
             add_block('simulink/Sinks/Out1', [current_branch_subsystem_actual_full_path, '/', outport_for_reaction_to_parent_Z_name], ...
-                      'Port', num2str(next_general_outport_number_in_branch + 2), ... % Port '3'
+                      'Port', num2str(next_general_outport_number_in_branch + 2), ... 
                       'Position', [react_outport_x_pos_inside_branch, react_outport_y_pos_start_inside_branch + layout_params_struct.general_outport_height + 10, ...
                                    react_outport_x_pos_inside_branch + layout_params_struct.general_outport_width, ...
                                    react_outport_y_pos_start_inside_branch + 2*layout_params_struct.general_outport_height + 10]);
-            % next_general_outport_number_in_branch += 2; % 如果后面还有其他通用Outport
         end
         
         % --- 构建分枝的三个段: Root, Mid, Tip ---
@@ -3162,10 +3399,12 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         segment_layout_x_start_inside_branch = 100; 
         segment_layout_y_pos_inside_branch = 200;   
     
+        % =====================================================================
         % --- 1. 根段 (Root Segment) ---
+        % =====================================================================
         root_segment_params = current_branch_params.root;
         root_mass_local_name = matlab.lang.makeValidName([path_id_str_for_names, '_', branch_segment_names{1}, '_Mass']);
-        [y_ic_root, z_ic_root] = get_ic_strings(root_mass_local_name); % *** 获取初始条件 ***
+        [y_ic_root, z_ic_root] = get_ic_strings(root_mass_local_name); 
                 
         segment_mass_paths{1} = create_mass_subsystem_2D(...
             current_branch_subsystem_actual_full_path, ... 
@@ -3186,13 +3425,23 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
     
         conn_to_parent_base_pos_xy = [segment_layout_x_start_inside_branch - layout_params_struct.segment_spacing_x / 1.5, ...
                                       segment_layout_y_pos_inside_branch + layout_params_struct.segment_height / 2];
+        
         if branch_level == 0 
+            % --- 主干: 连接到固定基座 (Root -> Base) ---
+            % 提取非线性参数 (如果存在)
+            k3_y_root = safe_get_param(root_segment_params, 'k3_y_conn_to_base');
+            c2_y_root = safe_get_param(root_segment_params, 'c2_y_conn_to_base');
+            k3_z_root = safe_get_param(root_segment_params, 'k3_z_conn_to_base');
+            c2_z_root = safe_get_param(root_segment_params, 'c2_z_conn_to_base');
+
             connect_elements_2D(...
                 current_branch_subsystem_actual_full_path, ... 
                 upstream_state_provider_for_root_segment_conn, 'BusSelector', ... 
                 segment_mass_paths{1}, strrep(root_mass_local_name, '_Mass', ''), ... 
                 root_segment_params.k_y_conn_to_base, root_segment_params.c_y_conn_to_base, ... 
+                k3_y_root, c2_y_root, ... % [新增] Y向非线性参数
                 root_segment_params.k_z_conn_to_base, root_segment_params.c_z_conn_to_base, ...
+                k3_z_root, c2_z_root, ... % [新增] Z向非线性参数
                 parent_reaction_force_target_full_path, ... 
                 outport_for_reaction_to_parent_Y_name, ...  
                 outport_for_reaction_to_parent_Z_name, ...  
@@ -3202,12 +3451,21 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 false, ... 
                 layout_params_struct);
         else 
+            % --- 子分枝: 连接到父分枝Tip (Root -> Parent Tip) ---
+            % 提取非线性参数
+            k3_y_root = safe_get_param(root_segment_params, 'k3_y_conn');
+            c2_y_root = safe_get_param(root_segment_params, 'c2_y_conn');
+            k3_z_root = safe_get_param(root_segment_params, 'k3_z_conn');
+            c2_z_root = safe_get_param(root_segment_params, 'c2_z_conn');
+
             connect_elements_2D(...
                 current_branch_subsystem_actual_full_path, ... 
                 upstream_state_provider_for_root_segment_conn, 'BusSelector', ...
                 segment_mass_paths{1}, strrep(root_mass_local_name, '_Mass', ''), ...
                 root_segment_params.k_y_conn, root_segment_params.c_y_conn, ... 
+                k3_y_root, c2_y_root, ... % [新增]
                 root_segment_params.k_z_conn, root_segment_params.c_z_conn, ...
+                k3_z_root, c2_z_root, ... % [新增]
                 current_branch_subsystem_actual_full_path, ... 
                 outport_for_reaction_to_parent_Y_name, ...  
                 outport_for_reaction_to_parent_Z_name, ...  
@@ -3217,6 +3475,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 true,  ...  
                 layout_params_struct);
             
+            % --- 反作用力连线处理 (子分枝 -> 父分枝Tip) ---
             parent_branch_subsystem_of_tip_path = fileparts(parent_reaction_force_target_full_path); 
             parent_tip_mass_local_name_in_its_branch = strrep(parent_reaction_force_target_full_path, [parent_branch_subsystem_of_tip_path, '/'], '');
     
@@ -3269,14 +3528,15 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                      [parent_tip_mass_local_name_in_its_branch, '/', parent_tip_mass_internal_inport_Z_port_num_str], 'autorouting', 'on');
         end
     
-        % --- 3.2 中段 (Mid Segment) ---
+        % =====================================================================
+        % --- 2. 中段 (Mid Segment) ---
+        % =====================================================================
         mid_segment_layout_x = segment_layout_x_start_inside_branch + layout_params_struct.segment_width + layout_params_struct.segment_spacing_x;
         mid_segment_params = current_branch_params.mid;
         mid_mass_local_name = matlab.lang.makeValidName([path_id_str_for_names, '_', branch_segment_names{2}, '_Mass']);
         [y_ic_mid, z_ic_mid] = get_ic_strings(mid_mass_local_name);
                 
-        % ========== 统一果实检测（Mid和Tip一起检测）==========
-        % 检测 Mid 位置是否有果实
+        % 检测 Mid 和 Tip 位置是否有果实
         has_fruit_at_mid = false;
         if isfield(current_branch_params, 'fruit_at_mid')
             if isstruct(current_branch_params.fruit_at_mid) && ~isempty(fieldnames(current_branch_params.fruit_at_mid))
@@ -3284,7 +3544,6 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             end
         end
         
-        % 检测 Tip 位置是否有果实
         has_fruit_at_tip = false;
         if isfield(current_branch_params, 'fruit_at_tip')
             if isstruct(current_branch_params.fruit_at_tip) && ~isempty(fieldnames(current_branch_params.fruit_at_tip))
@@ -3292,7 +3551,6 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             end
         end
         
-        % 向后兼容：旧字段名 'fruit' 映射到 fruit_at_tip
         if ~has_fruit_at_tip && isfield(current_branch_params, 'fruit')
             if isstruct(current_branch_params.fruit) && ~isempty(fieldnames(current_branch_params.fruit))
                 has_fruit_at_tip = true;
@@ -3300,7 +3558,6 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             end
         end
         
-        % 计算 Mid 段的连接端口数量：基础2个（来自root和去往tip）+ 果实1个（如果有）
         num_conn_pairs_for_mid = 2;
         if has_fruit_at_mid
             num_conn_pairs_for_mid = num_conn_pairs_for_mid + 1;
@@ -3323,14 +3580,25 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             excitation_targets_global{end+1} = struct('path', segment_mass_paths{2}, 'name', mid_mass_local_name);
         end
     
+        % --- Mid -> Root 连接 (包含非线性) ---
         conn_mid_to_root_base_pos_xy = [mid_segment_layout_x - layout_params_struct.segment_spacing_x / 1.5, ...
                                         segment_layout_y_pos_inside_branch + layout_params_struct.segment_height / 2];
+                                        
+        % 提取 Root->Mid 的连接刚度/阻尼 (通常存储在 root 参数中，因为它描述的是 Root-Mid 间的连接)
+        % 注意：这里的 k_y_conn 是从 ConfigAdapter 生成的，代表 Root 和 Mid 之间的连接属性
+        k3_y_rm = safe_get_param(root_segment_params, 'k3_y_conn');
+        c2_y_rm = safe_get_param(root_segment_params, 'c2_y_conn');
+        k3_z_rm = safe_get_param(root_segment_params, 'k3_z_conn');
+        c2_z_rm = safe_get_param(root_segment_params, 'c2_z_conn');
+
         connect_elements_2D(...
             current_branch_subsystem_actual_full_path, ...
             segment_mass_paths{1}, 'Mass', ...
             segment_mass_paths{2}, strrep(mid_mass_local_name, '_Mass', ''), ...
             root_segment_params.k_y_conn, root_segment_params.c_y_conn, ...
+            k3_y_rm, c2_y_rm, ... % [新增]
             root_segment_params.k_z_conn, root_segment_params.c_z_conn, ...
+            k3_z_rm, c2_z_rm, ... % [新增]
             segment_mass_paths{1}, 2, 2, ...
             1, ...
             conn_mid_to_root_base_pos_xy, ...
@@ -3465,11 +3733,13 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             end
         end
     
-        % --- 3.3 尖端 (Tip Segment) ---
+        % =====================================================================
+        % --- 3. 尖端 (Tip Segment) ---
+        % =====================================================================
         tip_segment_layout_x = mid_segment_layout_x + layout_params_struct.segment_width + layout_params_struct.segment_spacing_x;
         tip_segment_params = current_branch_params.tip;
         tip_mass_local_name = matlab.lang.makeValidName([path_id_str_for_names, '_', branch_segment_names{3}, '_Mass']);
-        [y_ic_tip, z_ic_tip] = get_ic_strings(tip_mass_local_name); % *** 获取初始条件 ***
+        [y_ic_tip, z_ic_tip] = get_ic_strings(tip_mass_local_name); 
         
         num_sub_branches_from_this_tip = 0;
         if branch_level == 0 
@@ -3510,30 +3780,39 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             excitation_targets_global{end+1} = struct('path', segment_mass_paths{3}, 'name', tip_mass_local_name);
         end
     
+        % --- Tip -> Mid 连接 (包含非线性) ---
         conn_tip_to_mid_base_pos_xy = [tip_segment_layout_x - layout_params_struct.segment_spacing_x / 1.5, ...
                                        segment_layout_y_pos_inside_branch + layout_params_struct.segment_height / 2];
+        
+        % 提取 Mid->Tip 的连接刚度/阻尼
+        k3_y_mt = safe_get_param(mid_segment_params, 'k3_y_conn');
+        c2_y_mt = safe_get_param(mid_segment_params, 'c2_y_conn');
+        k3_z_mt = safe_get_param(mid_segment_params, 'k3_z_conn');
+        c2_z_mt = safe_get_param(mid_segment_params, 'c2_z_conn');
+
         connect_elements_2D(...
             current_branch_subsystem_actual_full_path, ...
             segment_mass_paths{2}, 'Mass', ... 
             segment_mass_paths{3}, strrep(tip_mass_local_name, '_Mass', ''), ... 
             mid_segment_params.k_y_conn, mid_segment_params.c_y_conn, ...
+            k3_y_mt, c2_y_mt, ... % [新增]
             mid_segment_params.k_z_conn, mid_segment_params.c_z_conn, ...
+            k3_z_mt, c2_z_mt, ... % [新增]
             segment_mass_paths{2}, 2, 2, ... 
             1, ... 
             conn_tip_to_mid_base_pos_xy, ...
             false, false, ...
             layout_params_struct);
     
-        % --- 果实连接 ---
+        % --- 果实连接 (Tip 位置) ---
         tip_next_available_fconn_idx = 1 + 1; 
         
         if has_fruit_at_tip
             fruit_parameters_for_this_tip = current_branch_params.fruit_at_tip;
             fruit_unique_id_for_this_tip = matlab.lang.makeValidName([path_id_str_for_names, '_Fruit']);
             fruit_mass_local_name_on_tip = [fruit_unique_id_for_this_tip, '_Mass'];
-            [y_ic_fruit, z_ic_fruit] = get_ic_strings(fruit_mass_local_name_on_tip); % *** 获取初始条件 ***
+            [y_ic_fruit, z_ic_fruit] = get_ic_strings(fruit_mass_local_name_on_tip); 
     
-            % *** 新增：健壮性检查 ***
             if isempty(y_ic_fruit) || ~ischar(y_ic_fruit), y_ic_fruit = '0'; end
             if isempty(z_ic_fruit) || ~ischar(z_ic_fruit), z_ic_fruit = '0'; end
             fruit_layout_x_pos = tip_segment_layout_x + layout_params_struct.segment_width + layout_params_struct.fruit_offset_x;
@@ -3547,10 +3826,8 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 [fruit_layout_x_pos, segment_layout_y_pos_inside_branch, ... 
                 fruit_layout_x_pos + layout_params_struct.segment_width, ...
                 segment_layout_y_pos_inside_branch + layout_params_struct.segment_height], ...
-                '0', '0' ... % <-- 核心修改点：强制初始条件为0
+                '0', '0' ... 
             );
-            % 把这行注释掉代表着不添加果实位置到激励点中
-            % excitation_targets_global{end+1} = struct('path', fruit_mass_path_on_tip, 'name', fruit_mass_local_name_on_tip);
             
             conn_fruit_to_tip_base_pos_xy = [fruit_layout_x_pos - layout_params_struct.fruit_offset_x / 1.5, ...
                                              segment_layout_y_pos_inside_branch + layout_params_struct.segment_height / 2];
@@ -3576,7 +3853,6 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 end
             end
             
-            % --- 新增：为父级分枝尖端也定义信号变量名 ---
             parent_tip_id = strrep(fruit_unique_id_for_this_tip, '_Fruit', '_Tip');
             parent_tip_y_disp_varname  = matlab.lang.makeValidName([parent_tip_id, '_y_displacement']);
             parent_tip_z_disp_varname  = matlab.lang.makeValidName([parent_tip_id, '_z_displacement']);
@@ -3592,12 +3868,10 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 fruit_mass_rel_path_in_branch = strrep(fruit_mass_path_on_tip, [current_branch_subsystem_actual_full_path, '/'], '');
                 tip_mass_rel_path_in_branch   = strrep(segment_mass_paths{3}, [current_branch_subsystem_actual_full_path, '/'], '');
                 
-                % 定义布局参数
                 ws_block_layout_x = fruit_layout_x_pos + layout_params_struct.segment_width + 20;
                 ws_block_layout_y_offset = 50; 
                 ws_v_spacing = 30; ws_height = 20; ws_width = 200;  
     
-                % 创建果实的To Workspace模块
                 add_block('simulink/Sinks/To Workspace', [current_branch_subsystem_actual_full_path, '/', y_disp_varname_fruit, '_ToWs'], ...
                           'VariableName', y_disp_varname_fruit, 'SaveFormat', 'Timeseries', 'SampleTime', '-1', ...
                           'Position', [ws_block_layout_x, segment_layout_y_pos_inside_branch + ws_block_layout_y_offset, ...
@@ -3625,8 +3899,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                                        ws_block_layout_x + ws_width, segment_layout_y_pos_inside_branch + ws_block_layout_y_offset + ws_height]);
                 add_line(current_branch_subsystem_actual_full_path, [fruit_mass_rel_path_in_branch, '/6'], [z_accel_varname_fruit, '_ToWs/1']); 
                 
-                % --- 新增：为父级分枝尖端创建To Workspace模块 ---
-                ws_block_layout_y_offset = ws_block_layout_y_offset + 20; % 增加一些间距
+                ws_block_layout_y_offset = ws_block_layout_y_offset + 20; 
                 add_block('simulink/Sinks/To Workspace', [current_branch_subsystem_actual_full_path, '/', parent_tip_y_disp_varname, '_ToWs'], ...
                     'VariableName', parent_tip_y_disp_varname, 'SaveFormat', 'Timeseries', ...
                     'Position', [ws_block_layout_x, ws_block_layout_y_offset, ws_block_layout_x+ws_width, ws_block_layout_y_offset+ws_height]); 
@@ -3650,7 +3923,6 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                     'Position', [ws_block_layout_x, ws_block_layout_y_offset, ws_block_layout_x+ws_width, ws_block_layout_y_offset+ws_height]); 
                 add_line(current_branch_subsystem_actual_full_path, [tip_mass_rel_path_in_branch, '/6'], [parent_tip_z_accel_varname, '_ToWs/1']);
                 
-                % --- 修正的核心：将父级分枝尖端的信号变量名更新到全局信号管理器中 ---
                 fruit_signal_manager_global{idx_fruit_signal_in_manager}.parent_tip_y_disp_varname  = parent_tip_y_disp_varname;
                 fruit_signal_manager_global{idx_fruit_signal_in_manager}.parent_tip_z_disp_varname  = parent_tip_z_disp_varname;
                 fruit_signal_manager_global{idx_fruit_signal_in_manager}.parent_tip_y_accel_varname = parent_tip_y_accel_varname;
@@ -3681,7 +3953,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         branch_external_tip_state_outport_name = 'TipState_ExternalOut'; 
         outport_tip_state_x_pos = tip_segment_layout_x + layout_params_struct.segment_width + 50 + layout_params_struct.bus_creator_width + 20;
         add_block('simulink/Sinks/Out1', [current_branch_subsystem_actual_full_path, '/', branch_external_tip_state_outport_name], ...
-                  'Port', '1', ... % TipState_ExternalOut 固定为端口1
+                  'Port', '1', ... 
                   'Position', [outport_tip_state_x_pos, segment_layout_y_pos_inside_branch + 50, ...
                                outport_tip_state_x_pos + layout_params_struct.general_outport_width, ...
                                segment_layout_y_pos_inside_branch + 50 + layout_params_struct.general_outport_height]);
@@ -3704,10 +3976,8 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 if next_branch_level_to_build == 1
                     child_path_id_parts_preview_temp = {['P', num2str(i_child_branch)]};
                 elseif next_branch_level_to_build == 2
-                    % path_id_str_for_names 在这里应该是 "P<idx_p>"
                     child_path_id_parts_preview_temp = {path_id_str_for_names, ['S', num2str(i_child_branch)]};
                 elseif next_branch_level_to_build == 3
-                    % path_id_str_for_names 在这里应该是 "P<idx_p>_S<idx_s>"
                     child_path_id_parts_preview_temp = {path_id_str_for_names, ['T', num2str(i_child_branch)]};
                 end
                 child_prefix_preview_str = strjoin(child_path_id_parts_preview_temp, '_');
