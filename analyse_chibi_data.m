@@ -1088,11 +1088,19 @@ function identified_params = runIdentificationManual(accel_data_cell, force_data
     fprintf('║     (Staged Adaptive Dynamic Framework)                        ║\n');
     fprintf('╚════════════════════════════════════════════════════════════════╝\n\n');
     
+    % 从 test_config 中提取滤波参数
+    if isfield(test_config, 'analysis_params')
+        CUTOFF_FREQ = test_config.analysis_params.cutoff_freq;
+        FILTER_ORDER = test_config.analysis_params.filter_order;
+    else
+        error('  警告：未找到滤波参数\n');
+    end
+
     %% ==================== 数据标注阶段 ====================
     fprintf('【预处理】开始信号段标注...\n');
     
     % 调用手动标注界面获取信号段
-    segments = runManualAnnotation(accel_data_cell, force_data, force_time, fs, time_offsets);
+    segments = segmentSignalsManual(accel_data_cell, force_data, force_time, fs, time_offsets);
     
     if isempty(segments)
         fprintf('  [!] 未获取到有效信号段，流程终止。\n');
@@ -3932,8 +3940,7 @@ function [psd_avg_x, psd_avg_z, freq] = computeAveragePSDMatrix(segments, fs, nf
     end
 end
 
-%% ===== 增强的峰值识别诊断系统 =====
-
+%% ===== 峰值识别诊断系统 =====
 function visualizePeakDetection(segments, fs)
     fprintf('\n=== 峰值识别诊断开始 ===\n');
     
@@ -3992,8 +3999,7 @@ end
 
 
 
-%% ============ 全新的、更简单的信号对齐函数 ============
-
+%% ============ 信号对齐函数 ============
 function [type, fit_params] = determineNonlinearType(amplitudes, frequencies)
     % 功能：判定非线性类型（改进版，加权拟合+分段分析）
     
@@ -4086,7 +4092,7 @@ function [type, fit_params] = determineNonlinearType(amplitudes, frequencies)
     fit_params.trend_line_y = y_smooth;
 end
 
-%% ============ 新增：分类平均时频分析与可视化函数 (最终健壮版) ============
+%% ============ 分类平均时频分析与可视化函数 ============
 function visualizeTimeFrequencyAnalysis(segments, fs)
     % (V6.0 - 使用补零(Zero-Padding)处理短信号，并根据实际数据动态确定累加矩阵维度)
 
@@ -4299,10 +4305,7 @@ function setKeepView(state)
     g_annotation_data.keep_view = state;
 end
 
-%% =====================================================================
-%% 【新增】阶段一: 线性基准参数识别
-%% =====================================================================
-
+% 阶段一: 线性基准参数识别
 function linear_params = SAD_Stage1_LinearBaselineIdentification(segments, fs, analysis_params)
     % SAD阶段一: 线性基准参数识别
     % 
@@ -4328,9 +4331,9 @@ function linear_params = SAD_Stage1_LinearBaselineIdentification(segments, fs, a
     else
         freq_range = [1, 50]; % 默认
     end
-    coherence_threshold = 0.80;  
+    coherence_threshold = 0.30;  
     
-    %% 1.1 分方向计算实验FRF矩阵
+    % 1.1 分方向计算实验FRF矩阵
     directions = {'X', 'Z'};
     dir_indices = [2, 3];  % X对应第2列, Z对应第3列
     
@@ -4357,7 +4360,7 @@ function linear_params = SAD_Stage1_LinearBaselineIdentification(segments, fs, a
     
     linear_params.FRF_data = FRF_data;
     
-    %% 1.2 模态参数提取 - 有理分式多项式法(RFP)
+    % 1.2 模态参数提取 - 有理分式多项式法(RFP)
     fprintf('  [1.2] 使用RFP法提取模态参数...\n');
     
     for d = 1:length(directions)
@@ -4392,7 +4395,7 @@ function linear_params = SAD_Stage1_LinearBaselineIdentification(segments, fs, a
         end
     end
     
-   %% 1.3 物理参数反演与优化
+   % 1.3 物理参数反演与优化
     fprintf('  [1.3] 物理参数反演与优化...\n');
     
     % 定义等效质量
@@ -4592,10 +4595,7 @@ function linear_params = SAD_Stage1_LinearBaselineIdentification(segments, fs, a
 end
 
 
-%% =====================================================================
-%% 【新增】有理分式多项式法(RFP)模态参数提取
-%% =====================================================================
-
+% 有理分式多项式法(RFP)模态参数提取
 function [natural_freqs, damping_ratios, mode_shapes] = extractModalParametersRFP(...
     H_matrix, freq, Coherence, freq_range, coh_threshold)
     % 有理分式多项式法(Rational Fraction Polynomial)模态参数提取
@@ -4737,66 +4737,7 @@ function [natural_freqs, damping_ratios, mode_shapes] = extractModalParametersRF
     end
 end
 
-
-%% =====================================================================
-%% 【新增】峰值拾取法模态参数提取 (备用方法)
-%% =====================================================================
-
-function [natural_freqs, damping_ratios, mode_shapes] = extractModalParametersPeakPicking(...
-    H_matrix, freq, Coherence, freq_range)
-    % 峰值拾取法 - 简化的模态参数提取方法
-    % 当RFP法失败时使用
-    
-    % 频率范围筛选
-    freq_idx = freq >= freq_range(1) & freq <= freq_range(2);
-    freq_subset = freq(freq_idx);
-    
-    % 合成FRF幅值
-    H_sum = zeros(sum(freq_idx), 1);
-    [~, n_resp, n_exc] = size(H_matrix);
-    
-    for i = 1:n_resp
-        for j = 1:n_exc
-            H_ij = squeeze(H_matrix(freq_idx, i, j));
-            H_sum = H_sum + abs(H_ij);
-        end
-    end
-    H_sum = H_sum / (n_resp * n_exc);
-    
-    % 峰值检测
-    [peaks, locs] = findpeaks(H_sum, 'MinPeakProminence', max(H_sum)*0.05);
-    
-    if isempty(locs)
-        natural_freqs = [];
-        damping_ratios = [];
-        mode_shapes = [];
-        return;
-    end
-    
-    % 限制模态数
-    n_modes = min(length(locs), 5);
-    [~, sort_idx] = sort(peaks, 'descend');
-    locs = locs(sort_idx(1:n_modes));
-    locs = sort(locs);
-    
-    natural_freqs = freq_subset(locs)';
-    
-    % 估计阻尼比 (使用典型值)
-    damping_ratios = 0.03 * ones(1, n_modes);  % 默认3%阻尼比
-    
-    % 简化的模态振型
-    mode_shapes = ones(3, n_modes);
-    for m = 1:n_modes
-        mode_shapes(:, m) = [0.4; 0.7; 1.0] * (0.9 + 0.2*rand());
-    end
-end
-
-
-
-%% =====================================================================
-%% 【新增】窗函数应用
-%% =====================================================================
-
+% 窗函数应用
 function signal_out = applyExponentialWindow(signal, fs)
     % 指数窗 - 用于加速度信号
     % 防止时域截断导致的频谱泄漏
@@ -4832,11 +4773,7 @@ function signal_out = applyForceWindow(signal)
     signal_out = signal .* window;
 end
 
-
-%% =====================================================================
-%% 【新增】平均FRF计算
-%% =====================================================================
-
+% 平均FRF计算
 function [H_avg, Coh_avg, freq] = computeAveragedFRF(force_cell, accel_cell, nfft, fs)
     % 计算平均FRF和相干函数
     % 使用H1估计法: H1 = Sxy / Sxx
@@ -4889,11 +4826,7 @@ function [H_avg, Coh_avg, freq] = computeAveragedFRF(force_cell, accel_cell, nff
     Coh_avg = abs(Sxy_avg).^2 ./ ((Sxx_avg + 1e-12) .* (Syy_avg + 1e-12));
 end
 
-
-%% =====================================================================
-%% 【新增】定义等效质量矩阵
-%% =====================================================================
-
+% 定义等效质量矩阵
 function M_eq = defineEquivalentMassMatrix()
     % 定义三节点离散化的等效质量矩阵
     %
@@ -4909,10 +4842,7 @@ function M_eq = defineEquivalentMassMatrix()
 end
 
 
-%% =====================================================================
-%% 【新增】物理参数计算
-%% =====================================================================
-
+% 物理参数计算
 function [K, C, params_vec] = computePhysicalParameters(natural_freqs, damping_ratios, M, direction)
     % 从模态参数计算物理参数
     %
@@ -4974,10 +4904,7 @@ function [K, C, params_vec] = computePhysicalParameters(natural_freqs, damping_r
 end
 
 
-%% =====================================================================
-%% 【新增】阶段二: 非线性特征量化检测
-%% =====================================================================
-
+% 阶段二: 非线性特征量化检测
 function [nl_detection, nl_segments] = SAD_Stage2_NonlinearityDetection(segments, linear_params, fs)
     % SAD阶段二: 非线性特征量化检测
     %
@@ -5038,17 +4965,17 @@ function [nl_detection, nl_segments] = SAD_Stage2_NonlinearityDetection(segments
             continue;
         end
         
-        %% 2.1 计算骨架曲线偏离度 (Backbone Curve Deviation)
+        % 2.1 计算骨架曲线偏离度 (Backbone Curve Deviation)
         [backbone_dev, freq_amplitude_pairs] = computeBackboneDeviation(...
             pos_segments, linear_params, p, fs);
         
-        %% 2.2 计算高阶谐波能量比
+        % 2.2 计算高阶谐波能量比
         harmonic_ratio = computeHarmonicRatio(pos_segments, fs);
         
-        %% 2.3 计算相干函数下降
+        % 2.3 计算相干函数下降
         coherence_drop = computeCoherenceDrop(pos_segments, linear_params, p, fs);
         
-        %% 2.4 计算综合NL_index
+        % 2.4 计算综合NL_index
         NL_index = w1 * backbone_dev + w2 * harmonic_ratio + w3 * coherence_drop;
         
         % 存储结果
@@ -5092,10 +5019,7 @@ function [nl_detection, nl_segments] = SAD_Stage2_NonlinearityDetection(segments
 end
 
 
-%% =====================================================================
-%% 【新增】骨架曲线偏离度计算
-%% =====================================================================
-
+% 骨架曲线偏离度计算
 function [deviation, freq_amp_pairs] = computeBackboneDeviation(segments, linear_params, pos_idx, fs)
     % 计算骨架曲线偏离度
     %
@@ -5171,10 +5095,7 @@ function [deviation, freq_amp_pairs] = computeBackboneDeviation(segments, linear
 end
 
 
-%% =====================================================================
-%% 【新增】高阶谐波能量比计算
-%% =====================================================================
-
+% 高阶谐波能量比计算
 function harmonic_ratio = computeHarmonicRatio(segments, fs)
     % 计算高阶谐波能量比
     %
@@ -5249,10 +5170,7 @@ function harmonic_ratio = computeHarmonicRatio(segments, fs)
 end
 
 
-%% =====================================================================
-%% 【新增】相干函数下降计算
-%% =====================================================================
-
+% 相干函数下降计算
 function coherence_drop = computeCoherenceDrop(segments, linear_params, pos_idx, fs)
     % 计算相干函数下降
     %
@@ -5346,10 +5264,7 @@ function avg_coh = computeAverageCoherence(segments, fs)
 end
 
 
-%% =====================================================================
-%% 【新增】阶段三: 非线性参数识别 (谐波平衡法)
-%% =====================================================================
-
+% 阶段三: 非线性参数识别 (谐波平衡法)
 function nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(...
     nl_segments, linear_params, nl_detection, fs)
     % SAD阶段三: 非线性参数识别
@@ -5439,10 +5354,7 @@ function nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(...
 end
 
 
-%% =====================================================================
-%% 【新增】谐波平衡法优化
-%% =====================================================================
-
+% 谐波平衡法优化
 function [k3_opt, c2_opt, fit_quality] = harmonicBalanceOptimization(...
     amplitudes, frequencies, k_lin, c_lin, m_eq, omega0)
     % 谐波平衡法参数优化
@@ -5526,10 +5438,7 @@ function error = computeHBMObjective(x, A_exp, omega_exp, k_lin, c_lin, m_eq, om
 end
 
 
-%% =====================================================================
-%% 【新增】阶段四: 果实脱落力统计标定
-%% =====================================================================
-
+% 阶段四: 果实脱落力统计标定
 function detachment_model = SAD_Stage4_DetachmentForceModeling()
    % SAD_Stage4_DetachmentForceModeling - 果实脱落力统计标定
     % 核心机制：内置20组人工转录的原始试验数据，实时计算回归系数。
@@ -5627,10 +5536,7 @@ function detachment_model = SAD_Stage4_DetachmentForceModeling()
             beta_coeffs(1), beta_coeffs(2), beta_coeffs(3), beta_coeffs(4), beta_coeffs(5));
 end
 
-%% =====================================================================
-%% 【新增】构建全局矩阵
-%% =====================================================================
-
+% 构建全局矩阵
 function params = buildGlobalMatrices(params)
     % 构建用于仿真的全局质量、刚度、阻尼矩阵
     % 整合线性和非线性参数
@@ -5661,10 +5567,7 @@ function params = buildGlobalMatrices(params)
 end
 
 
-%% =====================================================================
-%% 【新增】创建统一参数接口
-%% =====================================================================
-
+% 创建统一参数接口
 function interface = createUnifiedParameterInterface(params)
     % 创建统一参数接口
     % 用于连接分析模块和仿真模块
@@ -5770,220 +5673,4 @@ function node_params = getNodeParameters(params, node_idx)
     end
 end
 
-%% =====================================================================
-%% 【保留】原有的手动标注函数 (略作修改以适配新架构)
-%% =====================================================================
 
-function segments = runManualAnnotation(accel_data_cell, force_data, force_time, fs, time_offsets)
-    % SAD框架信号段手动标注入口函数
-    %
-    % 功能:
-    %   1. 提供GUI界面让用户选择信号段
-    %   2. 支持加载已有标注或进行全新标注
-    %   3. 分别处理X和Z两个方向
-    %   4. 返回包含完整信息的信号段结构体数组
-    %
-    % 输入:
-    %   accel_data_cell - 1x3 cell数组, 包含三个传感器的加速度数据
-    %                     每个元素为struct: .time(时间向量), .data(Nx3矩阵)
-    %   force_data      - 力锤信号向量
-    %   force_time      - 力锤时间向量
-    %   fs              - 采样率 (Hz)
-    %   time_offsets    - 1x3向量, 各传感器的时间偏移量
-    %
-    % 输出:
-    %   segments - 信号段结构体数组, 每个元素包含:
-    %              .segment_id      - 段编号
-    %              .sensor_idx      - 传感器索引 (1=Root, 2=Mid, 3=Tip)
-    %              .direction       - 方向 ('X' 或 'Z')
-    %              .impact_location - 敲击位置 (1=Root, 2=Mid, 3=Tip)
-    %              .start_time      - 起始时间
-    %              .end_time        - 结束时间
-    %              .signal_data     - 信号数据
-    %              .force_data_segment - 对应的力信号段
-    %              等其他分析结果字段
-    
-    global g_annotation_data;
-    
-    segments = [];
-    
-    fprintf('\n');
-    fprintf('╔══════════════════════════════════════════════════════════════════╗\n');
-    fprintf('║  信号段手动标注系统 (SAD框架集成版)                              ║\n');
-    fprintf('╚══════════════════════════════════════════════════════════════════╝\n\n');
-    
-    %% ==================== 输入验证 ====================
-    if nargin < 5
-        time_offsets = zeros(1, 3);
-    end
-    
-    if isempty(accel_data_cell) || length(accel_data_cell) < 3
-        errordlg('加速度数据不完整，需要3个传感器的数据！', '输入错误');
-        return;
-    end
-    
-    % 验证数据结构
-    for i = 1:3
-        if ~isfield(accel_data_cell{i}, 'time') || ~isfield(accel_data_cell{i}, 'data')
-            errordlg(sprintf('传感器%d数据格式错误，需要包含time和data字段！', i), '输入错误');
-            return;
-        end
-    end
-    
-    fprintf('  数据验证通过:\n');
-    for i = 1:3
-        fprintf('    传感器%d: %d个样本, 时长%.2fs\n', ...
-            i, length(accel_data_cell{i}.time), accel_data_cell{i}.time(end));
-    end
-    if ~isempty(force_time)
-        fprintf('    力信号: %d个样本, 时长%.2fs\n', length(force_time), force_time(end));
-    end
-    fprintf('\n');
-    
-    %% ==================== 选择标注模式 ====================
-    answer = questdlg('请选择标注模式:', '标注模式选择', ...
-        '加载已有标注', '进行全新标注', '取消', '加载已有标注');
-    
-    switch answer
-        case '取消'
-            fprintf('  用户取消操作。\n');
-            return;
-            
-        case '加载已有标注'
-            %% ==================== 加载已有标注 ====================
-            segments = loadExistingAnnotations(accel_data_cell, force_data, force_time, fs);
-            return;
-            
-        case '进行全新标注'
-            fprintf('  开始进行全新标注...\n\n');
-            % 继续执行下面的标注流程
-    end
-    
-    %% ==================== X方向标注 ====================
-    fprintf('  ═══════════════════════════════════════\n');
-    fprintf('  ║  开始 X 方向信号段标注               ║\n');
-    fprintf('  ═══════════════════════════════════════\n\n');
-    
-    % 初始化全局数据结构
-    g_annotation_data = initializeAnnotationData(accel_data_cell, force_data, force_time, fs);
-    
-    % X方向标注
-    x_segments = annotateDirection('X', 2);
-    
-    % 清理X方向的图形窗口
-    if isfield(g_annotation_data, 'current_figure') && ishandle(g_annotation_data.current_figure)
-        close(g_annotation_data.current_figure);
-    end
-    
-    fprintf('  X方向标注完成，获取 %d 个信号段\n\n', length(x_segments));
-    
-    %% ==================== Z方向标注 ====================
-    fprintf('  ═══════════════════════════════════════\n');
-    fprintf('  ║  开始 Z 方向信号段标注               ║\n');
-    fprintf('  ═══════════════════════════════════════\n\n');
-    
-    % 重新初始化全局数据结构
-    g_annotation_data = initializeAnnotationData(accel_data_cell, force_data, force_time, fs);
-    
-    % Z方向标注
-    z_segments = annotateDirection('Z', 3);
-    
-    % 清理Z方向的图形窗口
-    if isfield(g_annotation_data, 'current_figure') && ishandle(g_annotation_data.current_figure)
-        close(g_annotation_data.current_figure);
-    end
-    
-    fprintf('  Z方向标注完成，获取 %d 个信号段\n\n', length(z_segments));
-    
-    %% ==================== 合并结果 ====================
-    segments = [x_segments, z_segments];
-    
-    fprintf('  ─────────────────────────────────────────\n');
-    fprintf('  标注汇总: 共 %d 个信号段\n', length(segments));
-    fprintf('    X方向: %d 段\n', length(x_segments));
-    fprintf('    Z方向: %d 段\n', length(z_segments));
-    fprintf('  ─────────────────────────────────────────\n\n');
-    
-    %% ==================== 保存标注结果 ====================
-    if ~isempty(segments)
-        n_unique_impacts = length(unique([segments.segment_id]));
-        answer_save = questdlg(...
-            sprintf('标注完成！共 %d 次敲击, %d 个信号段。\n是否保存本次标注结果？', ...
-                n_unique_impacts, length(segments)), ...
-            '保存标注', '保存', '不保存', '保存');
-        
-        if strcmp(answer_save, '保存')
-            saveAnnotationResults(segments, accel_data_cell, force_time, fs);
-        end
-    end
-    
-    %% ==================== 清理 ====================
-    clear global g_annotation_data;
-    
-    fprintf('  信号标注流程完成。\n\n');
-end
-
-%% =====================================================================
-%% 【补充】加载已有标注函数
-%% =====================================================================
-
-function segments = loadExistingAnnotations(accel_data_cell, force_data, force_time, fs)
-    % 加载已保存的标注文件并重建信号段
-    %
-    % 输入:
-    %   accel_data_cell - 加速度数据cell数组
-    %   force_data      - 力信号数据
-    %   force_time      - 力信号时间
-    %   fs              - 采样率
-    %
-    % 输出:
-    %   segments - 重建的信号段结构体数组
-    
-    global g_annotation_data;
-    
-    segments = [];
-    
-    fprintf('  开始加载已有标注文件...\n');
-    [filename, pathname] = uigetfile('*.mat', '请选择之前保存的标注文件');
-    
-    if isequal(filename, 0)
-        fprintf('  用户取消了文件选择。\n');
-        return;
-    end
-    
-    full_filepath = fullfile(pathname, filename);
-    fprintf('  正在从 %s 加载...\n', full_filepath);
-    
-    try
-        S = load(full_filepath);
-        
-        % 检查文件格式
-        if ~isfield(S, 'saved_annotations')
-            errordlg('选择的MAT文件无效：缺少 "saved_annotations" 变量。', '加载错误');
-            return;
-        end
-        
-        % 初始化全局数据结构（reconstructSegments 依赖此结构）
-        g_annotation_data = struct(...
-            'accel_data_cell', {accel_data_cell}, ...
-            'force_data', force_data, ...
-            'force_time', force_time, ...
-            'fs', fs, ...
-            'sensor_names', {{'Root', 'Mid', 'Tip'}});
-        
-        % 调用重建函数
-        if isfield(S, 'saved_annotations') && ~isempty(S.saved_annotations)
-            segments = reconstructSegments(S.saved_annotations, accel_data_cell, force_data, force_time, fs);
-        end
-        
-        if ~isempty(segments)
-            fprintf('  成功加载并重建了 %d 个信号段标注。\n', length(segments));
-        else
-            fprintf('  警告：文件已加载，但未能重建任何有效的信号段。\n');
-        end
-        
-    catch ME
-        errordlg(sprintf('加载标注文件失败: %s', ME.message), '加载错误');
-        segments = [];
-    end
-end

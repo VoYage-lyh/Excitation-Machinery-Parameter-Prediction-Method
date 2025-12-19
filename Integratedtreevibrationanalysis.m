@@ -45,14 +45,14 @@ fprintf('━━━━━━━━━━━━━━━━━━━━━━━�
 fprintf('第二步：参数识别\n');
 fprintf('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-identifyChoice = questdlg('请选择参数识别方式 (必须基于真实数据):', '参数识别', ...
-                          '运行参数识别 (新实验)', '加载已有识别结果 (MAT文件)', ...
-                          '加载已有识别结果 (MAT文件)');
+identifyChoice = questdlg('请选择参数识别方式:', '参数识别', ...
+                          '运行新的参数识别', '加载已有识别结果', ...
+                          '加载已有识别结果');
 
 identifiedParams = [];
 
 switch identifyChoice
-    case '运行参数识别'
+    case '运行新的参数识别'
         identifiedParams = runParameterIdentification(preConfig);
         
     case '加载已有识别结果'
@@ -60,6 +60,14 @@ switch identifyChoice
         
     case '跳过（使用估算值）'
         error('违反原则：严禁使用估算值跳过参数识别。所有仿真必须基于实验数据。');
+end
+
+% 进行空值检查，如果第二步失败或取消，直接终止，不进入第三步
+if isempty(identifiedParams)
+    fprintf('\n[!] 错误：未获取有效的 identifiedParams（为空）。\n');
+    fprintf('    可能是您在加载文件时取消了操作，或识别过程未返回结果。\n');
+    fprintf('    流程已安全终止。\n');
+    return;
 end
 
 %% ===================================================================
@@ -275,30 +283,61 @@ end
 
 % --- 辅助函数：递归生成所有分枝ID ---
 function ids = getAllBranchIDs(topo)
+    % getAllBranchIDs - 适配新版拓扑结构 (Cell Array)
     ids = {'Trunk'};
     
-    % 一级
-    for p = 1:topo.num_primary_branches
-        p_id = sprintf('P%d', p);
-        ids{end+1} = p_id;
+    % 检查是否为新版结构 (包含 structure 字段)
+    if isfield(topo, 'structure')
+        structure = topo.structure;
+        num_p = length(structure);
         
-        % 二级
-        if p <= length(topo.secondary_branches_count)
-            num_s = topo.secondary_branches_count(p);
+        for p = 1:num_p
+            p_id = sprintf('P%d', p);
+            ids{end+1} = p_id;
+            
+            vec = structure{p};
+            % 检查跳过标记 ([-1])
+            if isequal(vec, -1) || (length(vec)==1 && vec(1) == -1)
+                continue;
+            end
+            
+            num_s = length(vec);
             for s = 1:num_s
                 s_id = sprintf('%s_S%d', p_id, s);
                 ids{end+1} = s_id;
                 
-                % 三级
-                if p <= length(topo.tertiary_branches_count) && ...
-                   s <= length(topo.tertiary_branches_count{p})
-                    num_t = topo.tertiary_branches_count{p}(s);
-                    for t = 1:num_t
-                        ids{end+1} = sprintf('%s_T%d', s_id, t);
+                % 向量中的数值代表三级分枝数量
+                num_t = vec(s);
+                for t = 1:num_t
+                    ids{end+1} = sprintf('%s_T%d', s_id, t);
+                end
+            end
+        end
+        
+    % 兼容旧版 (防止直接报错)
+    elseif isfield(topo, 'num_primary_branches')
+        for p = 1:topo.num_primary_branches
+            p_id = sprintf('P%d', p);
+            ids{end+1} = p_id;
+            
+            if p <= length(topo.secondary_branches_count)
+                num_s = topo.secondary_branches_count(p);
+                for s = 1:num_s
+                    s_id = sprintf('%s_S%d', p_id, s);
+                    ids{end+1} = s_id;
+                    
+                    if p <= length(topo.tertiary_branches_count) && ...
+                       s <= length(topo.tertiary_branches_count{p})
+                        num_t = topo.tertiary_branches_count{p}(s);
+                        for t = 1:num_t
+                            ids{end+1} = sprintf('%s_T%d', s_id, t);
+                        end
                     end
                 end
             end
         end
+    else
+        error('Topology配置中缺少 "structure" 字段，且未找到旧版参数。请重新运行预配置(BranchConfigGUI)。');
     end
 end
 

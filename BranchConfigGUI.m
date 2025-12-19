@@ -47,7 +47,7 @@ function config = BranchConfigGUI()
     
     % Tab 4: 几何与质量参数
     tab3 = uitab(tabGroup, 'Title', '3. 几何与质量');
-    createGeometryMassPanel(tab3, configData);
+    createGeometryMassPanel(tab3, configData, fig);
     
     % Tab 5: 果实配置
     tab4 = uitab(tabGroup, 'Title', '4. 果实配置');
@@ -129,11 +129,14 @@ function config = getDefaultConfig()
     config.signal.freq_range_max = 50;
     config.signal.snr_threshold = 10;
     config.signal.nfft = 2048;
-        
+    
+
     % 拓扑结构
-    config.topology.num_primary_branches = 3;
-    config.topology.secondary_branches_count = [2, 1, 2];
-    config.topology.tertiary_branches_count = {[1, 2], [0], [1, 0]};
+    % 解释：
+    % P1: [1, 2] -> 有两个二级分枝。S1有1个三级，S2有2个三级。
+    % P2: [-1]   -> 无二级分枝。
+    % P3: [1, 0] -> 有两个二级分枝。S1有1个三级，S2无三级。
+    config.topology.structure = {[0, 0], [-1]};
     
     % 主干几何与质量参数
     config.trunk.total_mass = 11.23;           % 总质量 (kg)
@@ -143,10 +146,7 @@ function config = getDefaultConfig()
     config.trunk.mass_distribution = [0.4, 0.35, 0.25];  % root/mid/tip质量分配
     
     % 根据拓扑结构动态生成分枝参数
-    [config.primary, config.secondary, config.tertiary] = generateDefaultBranchParams(...
-        config.topology.num_primary_branches, ...
-        config.topology.secondary_branches_count, ...
-        config.topology.tertiary_branches_count);
+    [config.primary, config.secondary, config.tertiary] = generateDefaultBranchParams(config.topology.structure);
     
     % 果实参数（物理属性）
     config.fruit.mass = 0.025;                   % 单个果实质量 (kg)
@@ -158,7 +158,7 @@ function config = getDefaultConfig()
     config.fruit.k_pedicel = 2000;              % 果柄拉伸/弯曲刚度 (N/m) - 文献参考值
     config.fruit.c_pedicel = 0.5;               % 果柄阻尼系数 (Ns/m) - 文献参考值
     
-    % 果实位置配置（新逻辑：二级和三级分枝的mid和tip都挂果）
+    % 果实位置配置（二级和三级分枝的mid和tip都挂果）
     config.fruit.attach_secondary_mid = true;   % 二级分枝mid挂果
     config.fruit.attach_secondary_tip = true;   % 二级分枝tip挂果
     config.fruit.attach_tertiary_mid = true;    % 三级分枝mid挂果
@@ -289,66 +289,56 @@ end
 
 %% ==================== 拓扑结构面板 ====================
 function createTopologyPanel(parent, config)
-    panel = uipanel(parent, 'Title', '分枝拓扑结构', ...
+    panel = uipanel(parent, 'Title', '分枝拓扑结构 (Cell Array 定义)', ...
                     'Position', [0.02 0.02 0.96 0.96]);
     
-    y = 0.88;
-    dy = 0.1;
+    y = 0.88; dy = 0.1;
     
-    uicontrol(panel, 'Style', 'text', 'String', '一级分枝数量:', ...
-              'Units', 'normalized', 'Position', [0.02 y 0.2 0.06], ...
-              'HorizontalAlignment', 'left');
+    uicontrol(panel, 'Style', 'text', 'String', '拓扑结构定义 (Cell数组):', ...
+              'Units', 'normalized', 'Position', [0.02 y 0.3 0.06], ...
+              'HorizontalAlignment', 'left', 'FontWeight', 'bold');
+    
+    % 将 cell 数组转换为字符串显示
+    topoStr = cellArrayToString(config.topology.structure);
+    
     uicontrol(panel, 'Style', 'edit', ...
-              'String', num2str(config.topology.num_primary_branches), ...
-              'Units', 'normalized', 'Position', [0.23 y 0.1 0.06], ...
-              'Tag', 'edit_numPrimary');
+              'String', topoStr, ...
+              'Units', 'normalized', 'Position', [0.33 y 0.6 0.08], ...
+              'Tag', 'edit_topologyStructure', 'FontSize', 11);
     
-    y = y - dy;
-    uicontrol(panel, 'Style', 'text', ...
-              'String', '二级分枝数量 [P1下, P2下, P3下, ...]:', ...
-              'Units', 'normalized', 'Position', [0.02 y 0.4 0.06], ...
-              'HorizontalAlignment', 'left');
-    uicontrol(panel, 'Style', 'edit', ...
-              'String', mat2str(config.topology.secondary_branches_count), ...
-              'Units', 'normalized', 'Position', [0.43 y 0.3 0.06], ...
-              'Tag', 'edit_secondaryCount');
-    
-    y = y - dy;
-    uicontrol(panel, 'Style', 'text', ...
-              'String', '三级分枝数量 (用;分隔每个一级分枝):', ...
-              'Units', 'normalized', 'Position', [0.02 y 0.4 0.06], ...
-              'HorizontalAlignment', 'left');
-    
-    tertiary_str = '';
-    for i = 1:length(config.topology.tertiary_branches_count)
-        tertiary_str = [tertiary_str, mat2str(config.topology.tertiary_branches_count{i})];
-        if i < length(config.topology.tertiary_branches_count)
-            tertiary_str = [tertiary_str, '; '];
-        end
-    end
-    uicontrol(panel, 'Style', 'edit', ...
-              'String', tertiary_str, ...
-              'Units', 'normalized', 'Position', [0.43 y 0.5 0.06], ...
-              'Tag', 'edit_tertiaryCount');
-    
-    % 拓扑图示
-    y = y - dy * 1.5;
-    uicontrol(panel, 'Style', 'text', ...
-              'String', sprintf([...
-                  '拓扑结构示意（当前配置）:\n\n' ...
-                  '主干 ─┬─ P1 ─┬─ P1_S1 ─── P1_S1_T1 [果]\n' ...
-                  '      │      └─ P1_S2 ─┬─ P1_S2_T1 [果]\n' ...
-                  '      │                └─ P1_S2_T2 [果]\n' ...
-                  '      ├─ P2 ─── P2_S1 [果]\n' ...
-                  '      └─ P3 ─┬─ P3_S1 ─── P3_S1_T1 [果]\n' ...
-                  '             └─ P3_S2 [果]\n\n' ...
-                  '[果] = 该分枝mid和tip位置挂果']), ...
-              'Units', 'normalized', 'Position', [0.02 0.1 0.96 y-0.12], ...
+    y = y - dy * 1.2;
+    helpText = sprintf([...
+        '输入格式说明：\n' ...
+        '使用 Cell 数组 {...} 包含每个一级分枝的配置。\n' ...
+        '  1. Cell 的长度 = 一级分枝数量。\n' ...
+        '  2. 每个元素是一个向量，代表该一级分枝下的配置：\n' ...
+        '     - 若为 [-1]：表示该一级分枝没有二级分枝。\n' ...
+        '     - 若为 [n1, n2, ...]：向量长度表示二级分枝数量。\n' ...
+        '       数字 n1 表示第一个二级分枝上的三级分枝数量。\n\n' ...
+        '示例：{[0, 0], [-1]}\n' ...
+        '  - P1: 有2个二级分枝 ([0,0]长度为2)。S1无三级(0)，S2无三级(0)。\n' ...
+        '  - P2: 无二级分枝 ([-1])。\n']);
+        
+    uicontrol(panel, 'Style', 'text', 'String', helpText, ...
+              'Units', 'normalized', 'Position', [0.02 0.3 0.9 0.45], ...
               'HorizontalAlignment', 'left', 'FontName', 'FixedWidth', 'FontSize', 10);
 end
 
+% 辅助函数：将 Cell 数组转为字符串以便在 EditBox 显示
+function str = cellArrayToString(C)
+    str = '{';
+    for i = 1:length(C)
+        vec = C{i};
+        str = [str, mat2str(vec)];
+        if i < length(C)
+            str = [str, ', '];
+        end
+    end
+    str = [str, '}'];
+end
+
 %% ==================== 几何与质量参数面板 ====================
-function createGeometryMassPanel(parent, config)
+function createGeometryMassPanel(parent, config, fig)
     panel = uipanel(parent, 'Title', '几何与质量参数（不包含刚度阻尼 - 由识别获得）', ...
                     'Position', [0.02 0.02 0.96 0.96]);
     
@@ -388,6 +378,52 @@ function createGeometryMassPanel(parent, config)
     % 分枝参数表格
     branchPanel = uipanel(panel, 'Title', '分枝几何与质量参数', ...
                           'Position', [0.02 0.02 0.96 0.65]);
+    % 刷新按钮
+    uicontrol(branchPanel, 'Style', 'pushbutton', ...
+              'String', '🔄 根据Tab2拓扑重置分枝表 (刷新)', ...
+              'Units', 'normalized', ...
+              'Position', [0.02 0.92 0.4 0.06], ...
+              'FontWeight', 'bold', ...
+              'ForegroundColor', [0 0 0.8], ...
+              'Callback', @(~,~) refreshBranchTable(fig, branchPanel));
+
+    % 刷新表格的回调函数
+    function refreshBranchTable(fig, panel)
+        hEdit = findobj(fig, 'Tag', 'edit_topologyStructure');
+        if isempty(hEdit), errordlg('未找到拓扑结构输入框', '错误'); return; end
+        
+        try
+            structure = eval(get(hEdit, 'String'));
+            if ~iscell(structure), error('拓扑结构必须是Cell数组 {...}'); end
+            
+            [p, s, t] = generateDefaultBranchParams(structure);
+            tempConfig = struct('primary', p, 'secondary', s, 'tertiary', t);
+            newData = getBranchTableData(tempConfig);
+            
+            set(findobj(panel, 'Tag', 'table_branches'), 'Data', newData);
+            msgbox(sprintf('表格已刷新！\n共生成 %d 个分枝。', size(newData, 1)), '成功');
+        catch ME
+            errordlg(['刷新失败: ' ME.message], '拓扑解析错误');
+        end
+    end
+    
+    % 从 config 提取表格数据
+    function data = getBranchTableData(config)
+        data = {};
+        structs = {config.primary, config.secondary, config.tertiary};
+        for k = 1:3
+            s_struct = structs{k};
+            if isstruct(s_struct)
+                fields = fieldnames(s_struct);
+                for i = 1:length(fields)
+                    fn = fields{i};
+                    p = s_struct.(fn);
+                    data(end+1, :) = {fn, p.total_mass, p.length, ...
+                                      p.diameter_base, p.diameter_tip, mat2str(p.mass_dist)};
+                end
+            end
+        end
+    end
     
     columnNames = {'分枝ID', '总质量(kg)', '长度(m)', '基部直径(m)', '顶部直径(m)', '质量分配[r,m,t]'};
     columnFormat = {'char', 'numeric', 'numeric', 'numeric', 'numeric', 'char'};
@@ -728,51 +764,39 @@ end
 
 function drawTreeTopology(config)
     % 绘制简化的树状拓扑图
+    plot([0 0], [0 3], 'k-', 'LineWidth', 8); text(0.1, 1.5, '主干', 'FontSize', 10);
     
-    % 主干
-    plot([0 0], [0 3], 'k-', 'LineWidth', 8);
-    text(0.1, 1.5, '主干', 'FontSize', 10);
-    
-    % 一级分枝
-    numP = config.topology.num_primary_branches;
+    structure = config.topology.structure;
+    numP = length(structure);
     pAngles = linspace(30, 150, numP);
     
     for p = 1:numP
         angle = pAngles(p) * pi / 180;
-        px = 2 * cos(angle);
-        py = 2.5 + 0.5 * sin(angle);
-        
+        px = 2 * cos(angle); py = 2.5 + 0.5 * sin(angle);
         plot([0 px], [2.5 py], 'b-', 'LineWidth', 4);
         text(px, py + 0.2, sprintf('P%d', p), 'FontSize', 9, 'Color', 'b');
         
-        % 二级分枝
-        numS = config.topology.secondary_branches_count(p);
+        vec = structure{p};
+        % 处理 -1 情况 (无二级分枝)
+        if isequal(vec, -1) || (length(vec)==1 && vec(1) == -1)
+            continue;
+        end
+        
+        numS = length(vec);
         for s = 1:numS
-            sx = px + 0.8 * cos(angle - 0.3 + 0.3*s);
-            sy = py + 0.5;
-            
+            sx = px + 0.8 * cos(angle - 0.3 + 0.3*s); sy = py + 0.5;
             plot([px sx], [py sy], 'g-', 'LineWidth', 2);
             text(sx, sy + 0.15, sprintf('S%d', s), 'FontSize', 8, 'Color', [0 0.6 0]);
-            
-            % 标记挂果位置
             plot(sx, sy, 'ro', 'MarkerSize', 8, 'MarkerFaceColor', 'r');
             
-            % 三级分枝
-            if p <= length(config.topology.tertiary_branches_count)
-                numT = config.topology.tertiary_branches_count{p};
-                if s <= length(numT) && numT(s) > 0
-                    for t = 1:numT(s)
-                        tx = sx + 0.4 * cos(angle + 0.2*t);
-                        ty = sy + 0.3;
-                        plot([sx tx], [sy ty], 'm-', 'LineWidth', 1);
-                        plot(tx, ty, 'ro', 'MarkerSize', 6, 'MarkerFaceColor', 'r');
-                    end
-                end
+            numT = vec(s);
+            for t = 1:numT
+                tx = sx + 0.4 * cos(angle + 0.2*t); ty = sy + 0.3;
+                plot([sx tx], [sy ty], 'm-', 'LineWidth', 1);
+                plot(tx, ty, 'ro', 'MarkerSize', 6, 'MarkerFaceColor', 'r');
             end
         end
     end
-    
-    % 图例
     plot(NaN, NaN, 'ro', 'MarkerSize', 8, 'MarkerFaceColor', 'r');
     legend('挂果位置', 'Location', 'southeast');
 end
@@ -850,21 +874,15 @@ function config = collectAllParameters(fig)
     try
         config = struct();
         
-        % 基础设置
+        % 基础
         config.basic.workFolder = getEditValue(fig, 'edit_workFolder', 'string');
         config.basic.projectName = getEditValue(fig, 'edit_projectName', 'string');
-        if isempty(config.basic.projectName)
-            config.basic.projectName = 'Untitled_Tree'; % 防止为空
-        end
+        if isempty(config.basic.projectName), config.basic.projectName = 'Untitled_Tree'; end
         config.basic.gravity_g = getEditValue(fig, 'edit_gravity', 'double');
         config.basic.useParallel = getCheckValue(fig, 'check_parallel');
-        parallel_workers = getEditValue(fig, 'edit_parallel_workers', 'double');
-        if isnan(parallel_workers) || parallel_workers < 1
-            error('BranchConfigGUI:InvalidInput', '并行Worker数必须是大于0的整数');
-        end
-        config.basic.parallel_max_workers = round(parallel_workers);
+        config.basic.parallel_max_workers = round(getEditValue(fig, 'edit_parallel_workers', 'double'));
         
-        % 信号处理
+        % 信号
         config.signal.fs_target = getEditValue(fig, 'edit_fs', 'double');
         config.signal.cutoff_freq = getEditValue(fig, 'edit_cutoff', 'double');
         config.signal.filter_order = getEditValue(fig, 'edit_filterOrder', 'double');
@@ -873,15 +891,15 @@ function config = collectAllParameters(fig)
         config.signal.freq_range_max = getEditValue(fig, 'edit_freqMax', 'double');
         config.signal.snr_threshold = getEditValue(fig, 'edit_snrThreshold', 'double');
         
-        % 拓扑
-        config.topology.num_primary_branches = getEditValue(fig, 'edit_numPrimary', 'double');
-        config.topology.secondary_branches_count = eval(getEditValue(fig, 'edit_secondaryCount', 'string'));
-        
-        tertiaryStr = getEditValue(fig, 'edit_tertiaryCount', 'string');
-        parts = strsplit(tertiaryStr, ';');
-        config.topology.tertiary_branches_count = cell(1, length(parts));
-        for i = 1:length(parts)
-            config.topology.tertiary_branches_count{i} = eval(strtrim(parts{i}));
+        % 拓扑 (读取字符串并求值)
+        topoStr = getEditValue(fig, 'edit_topologyStructure', 'string');
+        try
+            config.topology.structure = eval(topoStr);
+            if ~iscell(config.topology.structure)
+                error('拓扑结构必须是 Cell 数组');
+            end
+        catch
+            error('拓扑结构格式错误，请检查输入 (应为 Cell 数组 {...})');
         end
         
         % 主干
@@ -891,7 +909,7 @@ function config = collectAllParameters(fig)
         config.trunk.diameter_tip = getEditValue(fig, 'edit_trunk_dTip', 'double');
         config.trunk.mass_distribution = eval(getEditValue(fig, 'edit_trunk_massDist', 'string'));
         
-        % 分枝参数（从表格）
+        % 分枝参数 (从表格读取，注意表格内容可能与新拓扑不完全同步，实际应有刷新机制)
         hTable = findobj(fig, 'Tag', 'table_branches');
         if ~isempty(hTable)
             tableData = get(hTable, 'Data');
@@ -907,24 +925,22 @@ function config = collectAllParameters(fig)
             end
         end
         
-        % 果实参数
+        % 果实
         config.fruit.mass = getEditValue(fig, 'edit_fruit_mass', 'double');
         config.fruit.diameter = getEditValue(fig, 'edit_fruit_diameter', 'double');
         config.fruit.pedicel_length = getEditValue(fig, 'edit_fruit_pedicel_length', 'double');
         config.fruit.pedicel_diameter = getEditValue(fig, 'edit_fruit_pedicel_diameter', 'double');
         config.fruit.F_break_mean = getEditValue(fig, 'edit_fruit_Fbreak_mean', 'double');
         config.fruit.F_break_std = getEditValue(fig, 'edit_fruit_Fbreak_std', 'double');
-
         config.fruit.k_pedicel = getEditValue(fig, 'edit_fruit_k_pedicel', 'double');
         config.fruit.c_pedicel = getEditValue(fig, 'edit_fruit_c_pedicel', 'double');
-
         config.fruit.attach_secondary_mid = getCheckValue(fig, 'check_secondary_mid');
         config.fruit.attach_secondary_tip = getCheckValue(fig, 'check_secondary_tip');
         config.fruit.attach_tertiary_mid = getCheckValue(fig, 'check_tertiary_mid');
         config.fruit.attach_tertiary_tip = getCheckValue(fig, 'check_tertiary_tip');
         config.fruit.fruits_per_node = getEditValue(fig, 'edit_fruits_per_node', 'double');
         
-        % 激励参数
+        % 激励
         bg = findobj(fig, 'Tag', 'bg_excitationType');
         if ~isempty(bg)
             selectedBtn = get(bg, 'SelectedObject');
@@ -936,7 +952,6 @@ function config = collectAllParameters(fig)
         else
             config.excitation.type = 'impulse';
         end
-        
         config.excitation.sine_amplitude_y = getEditValue(fig, 'edit_sine_ampY', 'double');
         config.excitation.sine_amplitude_z = getEditValue(fig, 'edit_sine_ampZ', 'double');
         config.excitation.frequency_hz = getEditValue(fig, 'edit_sine_freq', 'double');
@@ -988,7 +1003,7 @@ function val = getCheckValue(fig, tag)
     val = get(h(1), 'Value') == 1;
 end
 
-%% ==================== 从配置更新UI ====================
+%% ==================== UI更新函数 ====================
 function updateUIFromConfig(fig, config)
     % 从配置结构体更新所有UI控件的值
     
@@ -1007,16 +1022,8 @@ function updateUIFromConfig(fig, config)
     setEditValue(fig, 'edit_freqMax', num2str(config.signal.freq_range_max));
     setEditValue(fig, 'edit_snrThreshold', num2str(config.signal.snr_threshold));
     
-    % --- 拓扑结构 ---
-    setEditValue(fig, 'edit_numPrimary', num2str(config.topology.num_primary_branches));
-    setEditValue(fig, 'edit_secondaryCount', mat2str(config.topology.secondary_branches_count));
-    
-    % 三级分枝数量转换为字符串格式
-    tertiaryParts = cell(1, length(config.topology.tertiary_branches_count));
-    for i = 1:length(config.topology.tertiary_branches_count)
-        tertiaryParts{i} = mat2str(config.topology.tertiary_branches_count{i});
-    end
-    setEditValue(fig, 'edit_tertiaryCount', strjoin(tertiaryParts, '; '));
+    % 更新拓扑显示
+    setEditValue(fig, 'edit_topologyStructure', cellArrayToString(config.topology.structure));
     
     % --- 主干参数 ---
     setEditValue(fig, 'edit_trunk_mass', num2str(config.trunk.total_mass));
@@ -1025,41 +1032,22 @@ function updateUIFromConfig(fig, config)
     setEditValue(fig, 'edit_trunk_dTip', num2str(config.trunk.diameter_tip));
     setEditValue(fig, 'edit_trunk_massDist', mat2str(config.trunk.mass_distribution));
     
-    % --- 分枝参数表格 ---
+    % 更新表格数据
     hTable = findobj(fig, 'Tag', 'table_branches');
     if ~isempty(hTable)
         tableData = {};
-        
-        % 一级分枝
-        if isfield(config, 'primary') && isstruct(config.primary)
-            pFields = fieldnames(config.primary);
-            for i = 1:length(pFields)
-                p = config.primary.(pFields{i});
-                tableData(end+1, :) = {pFields{i}, p.total_mass, p.length, ...
-                                       p.diameter_base, p.diameter_tip, mat2str(p.mass_dist)};
+        structs = {config.primary, config.secondary, config.tertiary};
+        for k = 1:3
+            s_struct = structs{k};
+            if isstruct(s_struct)
+                fields = fieldnames(s_struct);
+                for i = 1:length(fields)
+                    p = s_struct.(fields{i});
+                    tableData(end+1, :) = {fields{i}, p.total_mass, p.length, ...
+                                           p.diameter_base, p.diameter_tip, mat2str(p.mass_dist)};
+                end
             end
         end
-        
-        % 二级分枝
-        if isfield(config, 'secondary') && isstruct(config.secondary)
-            sFields = fieldnames(config.secondary);
-            for i = 1:length(sFields)
-                s = config.secondary.(sFields{i});
-                tableData(end+1, :) = {sFields{i}, s.total_mass, s.length, ...
-                                       s.diameter_base, s.diameter_tip, mat2str(s.mass_dist)};
-            end
-        end
-        
-        % 三级分枝
-        if isfield(config, 'tertiary') && isstruct(config.tertiary)
-            tFields = fieldnames(config.tertiary);
-            for i = 1:length(tFields)
-                t = config.tertiary.(tFields{i});
-                tableData(end+1, :) = {tFields{i}, t.total_mass, t.length, ...
-                                       t.diameter_base, t.diameter_tip, mat2str(t.mass_dist)};
-            end
-        end
-        
         set(hTable, 'Data', tableData);
     end
     
@@ -1137,108 +1125,59 @@ function setCheckValue(fig, tag, value)
 end
 
 function [valid, msg] = validateConfig(config)
-    valid = true;
-    msg = '';
-    
-    % 验证拓扑
-    numP = config.topology.num_primary_branches;
-    if length(config.topology.secondary_branches_count) ~= numP
-        valid = false;
-        msg = [msg '二级分枝数量与一级分枝数量不匹配\n'];
-    end
-    
-    % 验证时间
-    if config.excitation.end_time >= config.simulation.stop_time
-        valid = false;
-        msg = [msg '激励结束时间必须小于仿真停止时间\n'];
-    end
-    
-    % 验证正数
-    if config.trunk.total_mass <= 0
-        valid = false;
-        msg = [msg '主干质量必须为正数\n'];
-    end
-    
-    % 验证质量分配
-    if abs(sum(config.trunk.mass_distribution) - 1) > 0.01
-        valid = false;
-        msg = [msg '主干质量分配之和必须为1\n'];
-    end
+    valid = true; msg = '';
+    if config.trunk.total_mass <= 0, valid = false; msg = [msg '主干质量必须为正数\n']; end
+    if ~iscell(config.topology.structure), valid = false; msg = [msg '拓扑结构必须为 Cell 数组\n']; end
 end
 
 %% ==================== 动态生成默认分枝参数 ====================
-function [primary, secondary, tertiary] = generateDefaultBranchParams(num_primary, secondary_count, tertiary_count)
-    % 根据拓扑配置动态生成默认的分枝几何与质量参数
-    % 这避免了硬编码特定数量的分枝
+function [primary, secondary, tertiary] = generateDefaultBranchParams(structure)
+    % 根据新的 Cell Array 拓扑结构生成默认参数
     
     primary = struct();
     secondary = struct();
     tertiary = struct();
     
-    % 基础参数模板（可根据分枝级别缩放）
-    base_mass_p = 5.0;        % 一级分枝基础质量
-    base_length_p = 0.5;      % 一级分枝基础长度
-    base_diam_base_p = 0.045; % 一级分枝基础直径
-    base_diam_tip_p = 0.028;  % 一级分枝尖端直径
-    
-    base_mass_s = 2.0;        % 二级分枝基础质量
-    base_length_s = 0.35;     % 二级分枝基础长度
-    base_diam_base_s = 0.025; % 二级分枝基础直径
-    base_diam_tip_s = 0.015;  % 二级分枝尖端直径
-    
-    base_mass_t = 0.5;        % 三级分枝基础质量
-    base_length_t = 0.25;     % 三级分枝基础长度
-    base_diam_base_t = 0.012; % 三级分枝基础直径
-    base_diam_tip_t = 0.006;  % 三级分枝尖端直径
-    
+    % 基础参数模板
+    base_mass_p = 5.0; base_length_p = 0.5; base_diam_base_p = 0.045; base_diam_tip_p = 0.028;
+    base_mass_s = 2.0; base_length_s = 0.35; base_diam_base_s = 0.025; base_diam_tip_s = 0.015;
+    base_mass_t = 0.5; base_length_t = 0.25; base_diam_base_t = 0.012; base_diam_tip_t = 0.006;
     default_mass_dist = [0.5, 0.3, 0.2];
     
-    % 生成一级分枝参数
-    for p = 1:num_primary
-        branch_id = sprintf('P%d', p);
-        variation = 0.8 + 0.4 * rand();
-        primary.(branch_id) = struct(...
-            'total_mass', base_mass_p * variation, ...
-            'length', base_length_p * (0.9 + 0.2 * rand()), ...
-            'diameter_base', base_diam_base_p * variation, ...
-            'diameter_tip', base_diam_tip_p * variation, ...
-            'mass_dist', default_mass_dist);
-    end
+    numP = length(structure);
     
-    % 生成二级分枝参数
-    for p = 1:num_primary
-        num_s = secondary_count(p);
-        for s = 1:num_s
-            branch_id = sprintf('P%d_S%d', p, s);
-            variation = 0.7 + 0.6 * rand();
-            secondary.(branch_id) = struct(...
-                'total_mass', base_mass_s * variation, ...
-                'length', base_length_s * (0.85 + 0.3 * rand()), ...
-                'diameter_base', base_diam_base_s * variation, ...
-                'diameter_tip', base_diam_tip_s * variation, ...
-                'mass_dist', default_mass_dist);
+    % 遍历一级分枝
+    for p = 1:numP
+        % 生成 P{p}
+        bid_p = sprintf('P%d', p);
+        var_p = 0.8 + 0.4*rand();
+        primary.(bid_p) = struct('total_mass', base_mass_p*var_p, 'length', base_length_p*var_p, ...
+                                 'diameter_base', base_diam_base_p*var_p, 'diameter_tip', base_diam_tip_p*var_p, ...
+                                 'mass_dist', default_mass_dist);
+        
+        vec = structure{p};
+        % 检查是否跳过二级分枝
+        if isequal(vec, -1) || (length(vec)==1 && vec(1) == -1)
+            continue;
         end
-    end
-    
-    % 生成三级分枝参数
-    for p = 1:num_primary
-        if p <= length(tertiary_count)
-            tertiary_for_p = tertiary_count{p};
-            num_s = secondary_count(p);
-            for s = 1:num_s
-                if s <= length(tertiary_for_p)
-                    num_t = tertiary_for_p(s);
-                    for t = 1:num_t
-                        branch_id = sprintf('P%d_S%d_T%d', p, s, t);
-                        variation = 0.6 + 0.8 * rand();
-                        tertiary.(branch_id) = struct(...
-                            'total_mass', base_mass_t * variation, ...
-                            'length', base_length_t * (0.8 + 0.4 * rand()), ...
-                            'diameter_base', base_diam_base_t * variation, ...
-                            'diameter_tip', base_diam_tip_t * variation, ...
-                            'mass_dist', default_mass_dist);
-                    end
-                end
+        
+        numS = length(vec);
+        for s = 1:numS
+            % 生成 P{p}_S{s}
+            bid_s = sprintf('P%d_S%d', p, s);
+            var_s = 0.7 + 0.6*rand();
+            secondary.(bid_s) = struct('total_mass', base_mass_s*var_s, 'length', base_length_s*var_s, ...
+                                       'diameter_base', base_diam_base_s*var_s, 'diameter_tip', base_diam_tip_s*var_s, ...
+                                       'mass_dist', default_mass_dist);
+                                   
+            numT = vec(s);
+            for t = 1:numT
+                % 生成 P{p}_S{s}_T{t}
+                bid_t = sprintf('P%d_S%d_T%d', p, s, t);
+                var_t = 0.6 + 0.8*rand();
+                tertiary.(bid_t) = struct('total_mass', base_mass_t*var_t, 'length', base_length_t*var_t, ...
+                                          'diameter_base', base_diam_base_t*var_t, 'diameter_tip', base_diam_tip_t*var_t, ...
+                                          'mass_dist', default_mass_dist);
             end
         end
     end

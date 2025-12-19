@@ -13,14 +13,7 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
         identifiedParams = [];
     end
     
-    %% 1. 严格性检查：必须提供参数识别结果
-    if isempty(identifiedParams)
-        error('ConfigAdapter:NoIdentifiedParams', ...
-              '错误：未提供 identifiedParams（参数识别结果）。\n' + ...
-              '为了避免硬编码数值，仿真必须基于 analyse_chibi_data.m 的识别结果运行。');
-    end
-    
-    %% 2. 生成参数识别所需参数 (保持不变)
+    %% 1. 生成参数识别所需参数 (保持不变)
     analysis_params = struct();
     analysis_params.fs_target = preConfig.signal.fs_target;
     analysis_params.cutoff_freq = preConfig.signal.cutoff_freq;
@@ -33,6 +26,14 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     analysis_params.node_labels = {'Root', 'Mid', 'Tip'};
     analysis_params.direction_labels = {'Y', 'Z'};
     analysis_params.topology = preConfig.topology;
+
+    %% 2. 检查是否需要生成仿真参数
+    if isempty(identifiedParams)
+        sim_params = []; % 返回空，避免报错
+        % 只有当外部真的需要 sim_params 但没给数据时，才会在外部流程中报错
+         fprintf('ConfigAdapter: 仅返回分析参数，未生成仿真参数 (identifiedParams 为空)。\n');
+        return; 
+    end
     
     %% 3. 生成仿真所需参数
     sim_params = struct();
@@ -45,10 +46,10 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     sim_params.use_parallel = preConfig.basic.useParallel;
     sim_params.config = preConfig.topology;
     
-    % --- 构建主干参数 (严格依赖识别结果) ---
+    % --- 构建主干参数 ---
     sim_params.trunk = buildTrunkParams(preConfig, identifiedParams);
     
-    % --- 构建分枝参数 (严格依赖识别结果 + 激活完整性验证) ---
+    % --- 构建分枝参数 ---
     sim_params.predefined_params = generatePredefinedParams(preConfig, identifiedParams);
     
     % --- 构建果实配置 ---
@@ -58,7 +59,7 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     sim_params.fruit_config.attach_tertiary_mid = preConfig.fruit.attach_tertiary_mid;
     sim_params.fruit_config.attach_tertiary_tip = preConfig.fruit.attach_tertiary_tip;
     
-    % [修复] 使用 GUI 配置的每节点果实数量，移除硬编码
+    % 使用 GUI 配置的每节点果实数量，移除硬编码
     if isfield(preConfig.fruit, 'fruits_per_node')
         sim_params.fruit_config.fruits_per_node = preConfig.fruit.fruits_per_node;
     else
@@ -71,7 +72,7 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     % 激励参数
     sim_params.excitation = preConfig.excitation;
     
-    % [修复] 更新激励频率为第一阶固有频率 (优先从Trunk获取，适配聚合结构体)
+    % 更新激励频率为第一阶固有频率 (优先从Trunk获取，适配聚合结构体)
     found_freq = false;
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, 'Trunk') && ...
        isfield(identifiedParams.branches.Trunk, 'linear') && ...
@@ -101,7 +102,7 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
 end
 
 %% ==================== 构建主干参数 ====================
-%% buildTrunkParams (修改版 - 支持非线性参数提取)
+%% buildTrunkParams (支持非线性参数提取)
 function trunk = buildTrunkParams(preConfig, identifiedParams)
     trunk = struct();
     
@@ -241,7 +242,7 @@ function trunk = buildTrunkParams(preConfig, identifiedParams)
 end
 
 %% ==================== 验证预定义参数完整性 ====================
-%% validatePredefinedParams (完整修改版 - 增加非线性参数完整性检查)
+%% validatePredefinedParams (增加非线性参数完整性检查)
 % 功能: 验证生成的预定义参数库是否包含所有必需的分枝，以及分枝参数是否完整。
 %       新增对非线性参数字段的检查。
 %
@@ -249,80 +250,46 @@ end
 %   predefined: 生成好的参数结构体
 %   preConfig: 预配置结构体 (用于对照拓扑)
 function validatePredefinedParams(predefined, preConfig)
-    % 验证所有必需的分枝参数是否都已生成
-    
     missingBranches = {};
-    incompleteParams = {}; % [新增] 记录参数不完整的分枝
+    incompleteParams = {};
+    structure = preConfig.topology.structure;
     
-    % --- 1. 检查一级分枝 ---
-    num_p = preConfig.topology.num_primary_branches;
-    for p = 1:num_p
-        branch_id = sprintf('P%d', p);
-        if ~isfield(predefined, branch_id)
-            missingBranches{end+1} = branch_id;
-        else
-            % [新增] 检查参数完整性
-            if ~checkBranchParamIntegrity(predefined.(branch_id))
-                incompleteParams{end+1} = branch_id;
+    numP = length(structure);
+    for p = 1:numP
+        % 检查 P
+        bid_p = sprintf('P%d', p);
+        if ~isfield(predefined, bid_p), missingBranches{end+1} = bid_p;
+        elseif ~checkBranchParamIntegrity(predefined.(bid_p)), incompleteParams{end+1} = bid_p; end
+        
+        vec = structure{p};
+        if isequal(vec, -1) || (length(vec)==1 && vec(1) == -1), continue; end
+        
+        numS = length(vec);
+        for s = 1:numS
+            % 检查 S
+            bid_s = sprintf('P%d_S%d', p, s);
+            if ~isfield(predefined, bid_s), missingBranches{end+1} = bid_s;
+            elseif ~checkBranchParamIntegrity(predefined.(bid_s)), incompleteParams{end+1} = bid_s; end
+            
+            numT = vec(s);
+            for t = 1:numT
+                % 检查 T
+                bid_t = sprintf('P%d_S%d_T%d', p, s, t);
+                if ~isfield(predefined, bid_t), missingBranches{end+1} = bid_t;
+                elseif ~checkBranchParamIntegrity(predefined.(bid_t)), incompleteParams{end+1} = bid_t; end
             end
         end
     end
     
-    % --- 2. 检查二级分枝 ---
-    for p = 1:num_p
-        num_s = preConfig.topology.secondary_branches_count(p);
-        for s = 1:num_s
-            branch_id = sprintf('P%d_S%d', p, s);
-            if ~isfield(predefined, branch_id)
-                missingBranches{end+1} = branch_id;
-            else
-                if ~checkBranchParamIntegrity(predefined.(branch_id))
-                    incompleteParams{end+1} = branch_id;
-                end
-            end
-        end
-    end
-    
-    % --- 3. 检查三级分枝 ---
-    for p = 1:num_p
-        if p <= length(preConfig.topology.tertiary_branches_count)
-            tertiary_for_p = preConfig.topology.tertiary_branches_count{p};
-            num_s = preConfig.topology.secondary_branches_count(p);
-            for s = 1:num_s
-                if s <= length(tertiary_for_p)
-                    num_t = tertiary_for_p(s);
-                    for t = 1:num_t
-                        branch_id = sprintf('P%d_S%d_T%d', p, s, t);
-                        if ~isfield(predefined, branch_id)
-                            missingBranches{end+1} = branch_id;
-                        else
-                            if ~checkBranchParamIntegrity(predefined.(branch_id))
-                                incompleteParams{end+1} = branch_id;
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    % --- 4. 报告错误 ---
     if ~isempty(missingBranches)
-        error('ConfigAdapter:MissingData', ...
-              '以下分枝在预配置中缺少几何参数，请在GUI中完整配置:\n  %s', ...
-              strjoin(missingBranches, ', '));
+        error('ConfigAdapter:MissingData', '以下分枝在预配置中缺少几何参数:\n  %s', strjoin(missingBranches, ', '));
     end
-    
-    % [新增] 报告参数不完整 (通常意味着 generateBranchSegmentParams 未正确执行)
     if ~isempty(incompleteParams)
-        warning('ConfigAdapter:IncompleteParams', ...
-                ['以下分枝的物理参数不完整 (可能缺少非线性 k3/c2 字段):\n  %s\n' ...
-                 '虽然仿真可能继续运行 (默认为0)，但这表明参数生成过程可能存在问题。'], ...
-                strjoin(incompleteParams, ', '));
+        warning('ConfigAdapter:IncompleteParams', '以下分枝参数不完整:\n  %s', strjoin(incompleteParams, ', '));
     end
 end
 
-% [新增] 内部辅助函数：检查单个分枝的参数字段
+% 内部辅助函数：检查单个分枝的参数字段
 function is_ok = checkBranchParamIntegrity(branch_data)
     is_ok = true;
     segments = {'root', 'mid', 'tip'};
@@ -347,7 +314,7 @@ function is_ok = checkBranchParamIntegrity(branch_data)
 end
 
 %% ==================== 为分枝生成默认段参数 ====================
-%% generatePredefinedParams (完整修改版 - 同步非线性参数流)
+%% generatePredefinedParams (同步非线性参数流)
 % 功能: 遍历所有分枝配置，调用子函数生成包含线性和非线性特征的完整物理参数。
 %       此函数是连接 "参数识别结果" 与 "仿真模型参数" 的核心调度器。
 %
@@ -363,6 +330,17 @@ function predefined = generatePredefinedParams(preConfig, identifiedParams)
         error('ConfigAdapter:MissingData', '缺少配置或识别参数');
     end
     
+    % 1. 显式定义 structure 变量 (必须在嵌套函数之前)
+    if isfield(preConfig.topology, 'structure')
+        structure = preConfig.topology.structure;
+    else
+        % 兼容旧版配置或报错
+        error('ConfigAdapter:LegacyConfig', ...
+              ['预配置中缺少 topology.structure 字段。\n' ...
+               '请重新打开 GUI (BranchConfigGUI)，在“拓扑结构”页面确认配置，\n' ...
+               '并在“几何与质量”页面点击刷新，最后保存新的配置文件。']);
+    end
+
     predefined = struct();
     fruitConfig = preConfig.fruit;
     
@@ -402,35 +380,32 @@ function predefined = generatePredefinedParams(preConfig, identifiedParams)
     end
 
     % --- 遍历生成所有分枝参数 ---
+    numP = length(structure);
     
-    % 1. 一级分枝 (Primary)
-    fprintf('    [ConfigAdapter] 正在生成一级分枝参数...\n');
-    for p = 1:preConfig.topology.num_primary_branches
-        branch_name = sprintf('P%d', p);
-        processBranch(branch_name, preConfig.primary);
-    end
+    fprintf('    [ConfigAdapter] 正在基于 Cell 拓扑生成参数...\n');
     
-    % 2. 二级分枝 (Secondary)
-    fprintf('    [ConfigAdapter] 正在生成二级分枝参数...\n');
-    for p = 1:preConfig.topology.num_primary_branches
-        for s = 1:preConfig.topology.secondary_branches_count(p)
-            branch_name = sprintf('P%d_S%d', p, s);
-            processBranch(branch_name, preConfig.secondary);
+    for p = 1:numP
+        % 1. 一级分枝
+        branch_name_p = sprintf('P%d', p);
+        processBranch(branch_name_p, preConfig.primary);
+        
+        vec = structure{p};
+        % 检查跳过标记
+        if isequal(vec, -1) || (length(vec)==1 && vec(1) == -1)
+            continue;
         end
-    end
-    
-    % 3. 三级分枝 (Tertiary)
-    fprintf('    [ConfigAdapter] 正在生成三级分枝参数...\n');
-    for p = 1:preConfig.topology.num_primary_branches
-        if p <= length(preConfig.topology.tertiary_branches_count)
-            tertiary_counts = preConfig.topology.tertiary_branches_count{p};
-            % 注意 tertiary_branches_count 可能是 cell array 也可能是 vector，需根据实际格式处理
-            % 这里假设经过 GUI 验证后是标准的数值数组或 cell 元素
-            for s = 1:length(tertiary_counts)
-                for t = 1:tertiary_counts(s)
-                    branch_name = sprintf('P%d_S%d_T%d', p, s, t);
-                    processBranch(branch_name, preConfig.tertiary);
-                end
+        
+        numS = length(vec);
+        for s = 1:numS
+            % 2. 二级分枝
+            branch_name_s = sprintf('P%d_S%d', p, s);
+            processBranch(branch_name_s, preConfig.secondary);
+            
+            numT = vec(s);
+            for t = 1:numT
+                % 3. 三级分枝
+                branch_name_t = sprintf('P%d_S%d_T%d', p, s, t);
+                processBranch(branch_name_t, preConfig.tertiary);
             end
         end
     end
@@ -442,13 +417,13 @@ function predefined = generatePredefinedParams(preConfig, identifiedParams)
 end
 
 %% ==================== 生成单个分枝的段参数 ====================
-%% generateBranchSegmentParams (完整修改版 - 支持非线性生成)
+%% generateBranchSegmentParams (支持非线性生成)
 % 功能: 根据基准值和分布因子，生成分枝各段(Root/Mid/Tip)的具体物理参数
 %
 % 输入:
 %   branchGeom: 几何参数
 %   k_base, c_base: 线性基准值
-%   k3_base, c2_base: 非线性基准值 [新增]
+%   k3_base, c2_base: 非线性基准值
 %   identified_taper: 分布因子结构体 (含 k, c, k3, c2)
 function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_base, c2_base, identified_taper)
     
@@ -537,13 +512,13 @@ function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_bas
 end
 
 %% ==================== 辅助函数 ====================
-%% estimateStiffnessDamping (完整修改版 - 支持非线性提取)
+%% estimateStiffnessDamping (支持非线性提取)
 % 功能: 获取分枝的刚度、阻尼及非线性参数的基准值和分布因子
 %       从实验识别结果中提取，并进行归一化处理
 %
 % 输出:
 %   k_base, c_base: 线性基准值
-%   k3_base, c2_base: 非线性基准值 [新增]
+%   k3_base, c2_base: 非线性基准值
 %   branch_taper: 包含 k, c, k3, c2 分布因子的结构体
 function [k_base, c_base, k3_base, c2_base, branch_taper] = estimateStiffnessDamping(branchGeom, identifiedParams, branchName)
     
