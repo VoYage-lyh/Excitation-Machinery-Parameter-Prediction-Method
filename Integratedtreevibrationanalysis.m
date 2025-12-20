@@ -230,7 +230,6 @@ function identifiedParams = runParameterIdentification(preConfig)
                 error('识别函数返回了空结果，请检查数据质量或标注过程。');
             end
             
-            % [核心修正2] 移除对私有子函数 SAD_Stage4... 的外部调用
             % 该函数在 analyse_chibi_data 内部，外部无法访问。
             % 逻辑上应信任 analyse_chibi_data 已包含完整流程。
             if ~isfield(current_result, 'detachment_model')
@@ -238,9 +237,10 @@ function identifiedParams = runParameterIdentification(preConfig)
             end
 
             % === 可视化确认环节 ===
-            btn = questdlg(sprintf('【%s】参数识别完成。\n请检查生成的图表（如FRF拟合、非线性回归）。\n结果是否合格？', branch_name), ...
-                           '质量确认', ...
-                           '合格，保存并继续', '不合格，重试', '合格，保存并继续');
+            btn = showNonBlockingDialog(sprintf('【%s】参数识别完成。\n请检查生成的图表（如FRF拟合、非线性回归）。\n结果是否合格？', branch_name), ...
+                                       '质量确认', ...
+                                       '合格，保存并继续', ...
+                                       '不合格，重试');
             
             if strcmp(btn, '不合格，重试')
                 fprintf('  [!] 用户标记结果不合格，正在重置当前分枝...\n');
@@ -569,4 +569,78 @@ function exportSimParamsToWorkspace(params)
     end
     
     fprintf('  参数导出完成。\n');
+end
+
+%% ============ 自定义非模态对话框  ============
+function selection = showNonBlockingDialog(questionStr, titleStr, btn1Str, btn2Str)
+    % showNonBlockingDialog - 创建一个非模态对话框
+    % 功能：弹出一个带两个按钮的窗口，暂停程序执行等待用户选择，
+    %       但允许用户在等待期间点击、查看、缩放其他图窗。
+    
+    % 1. 创建图窗 (关键设置：WindowStyle = 'normal')
+    % 计算屏幕中心位置
+    screenSize = get(0, 'ScreenSize');
+    dlgWidth = 400; dlgHeight = 160;
+    posX = (screenSize(3) - dlgWidth) / 2;
+    posY = (screenSize(4) - dlgHeight) / 2;
+    
+    hFig = figure('Name', titleStr, ...
+                  'NumberTitle', 'off', ...
+                  'MenuBar', 'none', ...
+                  'ToolBar', 'none', ...
+                  'Resize', 'off', ...
+                  'Position', [posX, posY, dlgWidth, dlgHeight], ...
+                  'WindowStyle', 'normal', ... % <--- 核心：非模态，不遮挡操作
+                  'CloseRequestFcn', @(s,e) uiresume(s)); % 点叉号也恢复程序
+    
+    % 2. 显示提示文本
+    uicontrol(hFig, 'Style', 'text', ...
+              'String', questionStr, ...
+              'Position', [30, 80, 340, 60], ...
+              'FontSize', 12, ...
+              'HorizontalAlignment', 'center', ...
+              'BackgroundColor', get(hFig, 'Color'));
+    
+    % 3. 初始化选择结果
+    selection = '';
+    
+    % 4. 定义按钮回调
+    function onBtnClick(val)
+        selection = val;
+        uiresume(hFig); % 恢复程序执行
+    end
+    
+    % 5. 创建按钮
+    % 按钮 1 (左)
+    uicontrol(hFig, 'Style', 'pushbutton', ...
+              'String', btn1Str, ...
+              'Position', [50, 25, 120, 40], ...
+              'FontSize', 11, ...
+              'BackgroundColor', [0.95, 0.95, 0.95], ...
+              'Callback', @(~,~) onBtnClick(btn1Str));
+    
+    % 按钮 2 (右)
+    uicontrol(hFig, 'Style', 'pushbutton', ...
+              'String', btn2Str, ...
+              'Position', [230, 25, 120, 40], ...
+              'FontSize', 11, ...
+              'BackgroundColor', [0.95, 0.95, 0.95], ...
+              'Callback', @(~,~) onBtnClick(btn2Str));
+          
+    % 6. 强制刷新并置顶所有图窗
+    drawnow;
+    figure(hFig); % 确保对话框在最前，但之后可以点别的窗口
+    
+    % 7. 暂停程序，等待用户操作
+    uiwait(hFig);
+    
+    % 8. 清理与返回
+    if ishandle(hFig)
+        close(hFig);
+    end
+    
+    % 如果用户直接点了关闭窗口而没点按钮，默认返回第二个选项（通常是重试或取消）
+    if isempty(selection)
+        selection = btn2Str; 
+    end
 end

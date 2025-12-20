@@ -879,6 +879,8 @@ function config = collectAllParameters(fig)
         config.basic.projectName = getEditValue(fig, 'edit_projectName', 'string');
         if isempty(config.basic.projectName), config.basic.projectName = 'Untitled_Tree'; end
         config.basic.gravity_g = getEditValue(fig, 'edit_gravity', 'double');
+        % 显式写入 Simulink 模型名称 (防止丢失)
+        config.basic.modelName = 'MDOF_Hierarchical_Vibration_Sim';
         config.basic.useParallel = getCheckValue(fig, 'check_parallel');
         config.basic.parallel_max_workers = round(getEditValue(fig, 'edit_parallel_workers', 'double'));
         
@@ -909,19 +911,43 @@ function config = collectAllParameters(fig)
         config.trunk.diameter_tip = getEditValue(fig, 'edit_trunk_dTip', 'double');
         config.trunk.mass_distribution = eval(getEditValue(fig, 'edit_trunk_massDist', 'string'));
         
-        % 分枝参数 (从表格读取，注意表格内容可能与新拓扑不完全同步，实际应有刷新机制)
+        % 分枝参数 (从表格读取)
         hTable = findobj(fig, 'Tag', 'table_branches');
         if ~isempty(hTable)
             tableData = get(hTable, 'Data');
-            config.branches = struct();
+            
+            % [修复] 初始化分类结构体，与 ConfigAdapter 保持一致
+            config.primary = struct();
+            config.secondary = struct();
+            config.tertiary = struct();
+            
             for i = 1:size(tableData, 1)
                 branchId = tableData{i, 1};
-                config.branches.(branchId) = struct(...
+                
+                % 构建单个分枝参数
+                s_params = struct(...
                     'total_mass', tableData{i, 2}, ...
                     'length', tableData{i, 3}, ...
                     'diameter_base', tableData{i, 4}, ...
                     'diameter_tip', tableData{i, 5}, ...
                     'mass_dist', eval(tableData{i, 6}));
+                
+                % 根据 ID 下划线数量自动归类
+                % P1 -> 0个下划线 -> primary
+                % P1_S1 -> 1个下划线 -> secondary
+                % P1_S1_T1 -> 2个下划线 -> tertiary
+                u_count = length(strfind(branchId, '_'));
+                
+                if u_count == 0
+                    config.primary.(branchId) = s_params;
+                elseif u_count == 1
+                    config.secondary.(branchId) = s_params;
+                elseif u_count == 2
+                    config.tertiary.(branchId) = s_params;
+                else
+                    % 异常情况，暂存入 primary 或忽略
+                    config.primary.(branchId) = s_params;
+                end
             end
         end
         

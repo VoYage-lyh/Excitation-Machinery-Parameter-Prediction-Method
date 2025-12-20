@@ -5,6 +5,7 @@ function identified_params = analyse_chibi_data(analysis_config)
     %   .detachment_calibration_data: 脱落力标定数据矩阵 (从CSV读取)
     %   .analysis_params: 信号处理参数 (fs_target, cutoff 等)
     %   .annotation_file: (可选) 已有的标注文件路径，用于跳过手动标注
+    % 检索s.detection_results.snr和coherence_threshold修改信噪比和相干性的限制等级！
     
         % 1. 严格输入检查
         if nargin < 1 || isempty(analysis_config)
@@ -89,7 +90,7 @@ function identified_params = analyse_chibi_data(analysis_config)
     fprintf('  传感器3（顶部）: %.4f 秒\n', time_offsets(3));
     fprintf('========================================\n\n');
     
-    % 步骤 3: 使用完美对齐的 cell 数据进入手动标注流程 (无需修改下游函数)
+    % 步骤 3: 使用完美对齐的 cell 数据进入手动标注流程
     identified_params = runIdentificationManual(accel_data_cell, ...
             force_data, force_time, fs_final, test_config, time_offsets);
     
@@ -353,10 +354,6 @@ function fs_est = estimateSamplingRate(timestamps)
         fs_est = 1000;
     end
 end
-
-
-
-
 
 function [accel_data_cell_resampled, fs_target] = resampleToUnifiedTimeBase(accel_data_raw_cell, fs_target)
     if nargin < 2
@@ -1141,18 +1138,42 @@ function identified_params = runIdentificationManual(accel_data_cell, force_data
     
     %% ==================== SAD阶段三: 非线性参数识别 (仅对非线性节点) ====================
     fprintf('╔══════════════════════════════════════════════════════════════════╗\n');
-    fprintf('║  阶段三: 非线性参数识别 (Harmonic Balance Method)               ║\n');
-    fprintf('╚══════════════════════════════════════════════════════════════════╝\n\n');
+    fprintf('║  阶段三: 非线性参数识别 (X/Z 双向独立)                          ║\n');
+    fprintf('╚══════════════════════════════════════════════════════════════════╝\n');
     
+    % 初始化默认空结构体
+    default_nl = struct('k3_coeffs', zeros(1,3), 'c2_coeffs', zeros(1,3), ...
+                        'nonlinear_type', {{'linear', 'linear', 'linear'}}, 'valid', true);
+    nonlinear_params_x = default_nl;
+    nonlinear_params_z = default_nl;
+
     if any(nl_detection.is_nonlinear)
-        nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(...
-            nl_segments, linear_params, nl_detection, fs);
-        fprintf('  [√] 阶段三完成: 识别了 %d 组非线性参数\n\n', ...
-            sum(nonlinear_params.k3_coeffs ~= 0));
+        % 1. 拆分非线性信号段 (X: direction_idx=2, Z: direction_idx=3)
+        % 注意：这里的 idx 必须与您 loadSingleSensorCSV 中的定义一致
+        nl_segs_x = nl_segments(arrayfun(@(s) s.direction_idx == 2, nl_segments));
+        nl_segs_z = nl_segments(arrayfun(@(s) s.direction_idx == 3, nl_segments));
+        
+        % 2. X 方向识别
+        if ~isempty(nl_segs_x)
+            fprintf('  > 正在识别 X 方向非线性参数...\n');
+            nonlinear_params_x = SAD_Stage3_NonlinearParameterIdentification(...
+                nl_segs_x, linear_params, nl_detection, fs);
+        else
+            fprintf('  [i] 无 X 方向非线性信号段，使用线性模型。\n');
+        end
+        
+        % 3. Z 方向识别
+        if ~isempty(nl_segs_z)
+            fprintf('  > 正在识别 Z 方向非线性参数...\n');
+            nonlinear_params_z = SAD_Stage3_NonlinearParameterIdentification(...
+                nl_segs_z, linear_params, nl_detection, fs);
+        else
+            fprintf('  [i] 无 Z 方向非线性信号段，使用线性模型。\n');
+        end
+        
+        fprintf('  [√] 阶段三完成\n\n');
     else
         fprintf('  [i] 未检测到显著非线性，跳过阶段三\n');
-        nonlinear_params = struct('k3_coeffs', zeros(1,3), 'c2_coeffs', zeros(1,3), ...
-            'nonlinear_type', {{'linear', 'linear', 'linear'}}, 'valid', true);
     end
     
     %% ==================== SAD阶段四: 果实脱落力统计标定 ====================
@@ -1182,7 +1203,8 @@ function identified_params = runIdentificationManual(accel_data_cell, force_data
     identified_params.nl_detection = nl_detection;
     
     % 阶段三: 非线性参数
-    identified_params.nonlinear = nonlinear_params;
+    identified_params.nonlinear = nonlinear_params_x;     % X方向存入 .nonlinear (保持兼容)
+    identified_params.nonlinear_z = nonlinear_params_z;   % Z方向存入 .nonlinear_z (新增)
     
     % 阶段四: 脱落力模型
     identified_params.detachment_model = detachment_model;
@@ -1539,7 +1561,6 @@ function segment_info = analyzeSegmentTwoStep(segment_info, accel_data_cell, ...
         segment_info.force_data_segment = [];
     end
 
-    % ========== [关键修复] 加速度信号处理:优先使用索引 ==========
     if isfield(segment_info, 'accel_start_idx') && isfield(segment_info, 'accel_end_idx')
         % 使用保存的索引
         accel_start_idx = segment_info.accel_start_idx;
@@ -1549,22 +1570,28 @@ function segment_info = analyzeSegmentTwoStep(segment_info, accel_data_cell, ...
         accel_start_idx = find(accel_time_vec >= segment_info.start_time, 1, 'first');
         accel_end_idx = find(accel_time_vec <= segment_info.end_time, 1, 'last');
     end
-    % ========== [关键修复结束] ==========
     
     if ~isempty(accel_start_idx) && ~isempty(accel_end_idx) && accel_end_idx > accel_start_idx
         dir_idx = segment_info.direction_idx;
         segment_signal = accel_data_matrix(accel_start_idx:accel_end_idx, dir_idx);
+        
+        % 去直流，否则FFT低频分量会爆炸，导致SNR极低
+        segment_signal = segment_signal - mean(segment_signal); 
+        
         segment_info.signal_data = segment_signal;
         segment_info.time_data = (0:length(segment_signal)-1)' / fs;
         
         all_sensor_data_segment = zeros(length(segment_signal), 3, 3);
+
         for s_idx = 1:3
             temp_t = accel_data_cell{s_idx}.time;
             temp_data = accel_data_cell{s_idx}.data;
             s_start_idx = find(temp_t >= segment_info.start_time, 1, 'first');
             s_end_idx = s_start_idx + length(segment_signal) - 1;
             if ~isempty(s_start_idx) && s_end_idx <= length(temp_t)
-                all_sensor_data_segment(:, s_idx, :) = temp_data(s_start_idx:s_end_idx, :);
+                raw_seg = temp_data(s_start_idx:s_end_idx, :);
+                % 对所有通道的数据也要去直流
+                all_sensor_data_segment(:, s_idx, :) = raw_seg - mean(raw_seg);
             end
         end
         segment_info.data = all_sensor_data_segment;
@@ -2815,7 +2842,20 @@ function [errors, details] = validateDirection(params, all_segments, direction, 
         test_segs = dir_segments(test_indices);
         
         % 1. **仅使用训练集**重新训练模型
-        params_fold = trainModelForCV(train_segs, params.fs, analysis_params);
+        try
+            params_fold = trainModelForCV(train_segs, params.fs, analysis_params);
+        catch ME
+            % 捕获训练失败的情况（如子集数据不足导致RFP失败）
+            fprintf('        [!] 第 %d 折训练跳过: 训练集数据质量不足 (%s)\n', fold, ME.message);
+            errors(fold) = NaN; % 标记该折误差为无效
+            continue; % 跳过本折，继续下一折
+        end
+        
+        % 二次检查返回结果
+        if isempty(params_fold)
+            errors(fold) = NaN;
+            continue;
+        end
         
         % 2. 在测试集上评估
         fold_error = 0;
@@ -3099,73 +3139,14 @@ function visualizeResults(params)
     end
     
     linear_params = params.linear;
-    
-    % X方向FRF
-    if isfield(linear_params, 'FRF_matrix_x') && isfield(linear_params, 'frequency_vector')
-        FRF_x = linear_params.FRF_matrix_x;
-        freq_vec = linear_params.frequency_vector;
-        
-        if ~isempty(FRF_x) && ~isempty(freq_vec) && ...
-           size(FRF_x, 1) == length(freq_vec) && ...
-           size(FRF_x, 2) >= 3 && size(FRF_x, 3) >= 3
-            
-            figure('Name', 'X方向频响函数矩阵');
-            for output = 1:3
-                for input = 1:3
-                    subplot(3, 3, (output-1)*3 + input);
-                    try
-                        frf_data = abs(FRF_x(:, output, input));
-                        if any(frf_data > 0)
-                            semilogy(freq_vec, frf_data, 'b-', 'LineWidth', 1.5);
-                            xlabel('频率 (Hz)');
-                            ylabel('幅值');
-                            title(sprintf('H_{%d%d}', output, input));
-                            grid on;
-                        else
-                            text(0.5, 0.5, '无数据', 'Units', 'normalized', 'HorizontalAlignment', 'center');
-                        end
-                    catch ME
-                        text(0.5, 0.5, sprintf('错误: %s', ME.message), 'Units', 'normalized', 'HorizontalAlignment', 'center');
-                    end
-                end
-            end
-        else
-            fprintf('警告：X方向FRF矩阵维度不匹配\n');
-        end
-    end
-    
-    % Z方向FRF
-    if isfield(linear_params, 'FRF_matrix_z') && isfield(linear_params, 'frequency_vector')
-        FRF_z = linear_params.FRF_matrix_z;
-        freq_vec = linear_params.frequency_vector;
-        
-        if ~isempty(FRF_z) && ~isempty(freq_vec) && ...
-           size(FRF_z, 1) == length(freq_vec) && ...
-           size(FRF_z, 2) >= 3 && size(FRF_z, 3) >= 3
-            
-            figure('Name', 'Z方向频响函数矩阵');
-            for output = 1:3
-                for input = 1:3
-                    subplot(3, 3, (output-1)*3 + input);
-                    try
-                        frf_data = abs(FRF_z(:, output, input));
-                        if any(frf_data > 0)
-                            semilogy(freq_vec, frf_data, 'b-', 'LineWidth', 1.5);
-                            xlabel('频率 (Hz)');
-                            ylabel('幅值');
-                            title(sprintf('H_{%d%d}', output, input));
-                            grid on;
-                        else
-                            text(0.5, 0.5, '无数据', 'Units', 'normalized', 'HorizontalAlignment', 'center');
-                        end
-                    catch ME
-                        text(0.5, 0.5, sprintf('错误: %s', ME.message), 'Units', 'normalized', 'HorizontalAlignment', 'center');
-                    end
-                end
-            end
-        else
-            fprintf('警告：Z方向FRF矩阵维度不匹配\n');
-        end
+
+    % 生成 STFT 时频分析图
+    % 这将生成 "分类平均时频能量谱" 图窗
+    fprintf('  [可视化] 正在生成 STFT 时频分析图...\n');
+    if isfield(params, 'segments') && ~isempty(params.segments)
+        visualizeTimeFrequencyAnalysis(params.segments, params.fs);
+    else
+        fprintf('  警告：无信号段数据，跳过 STFT 分析。\n');
     end
 
     % 1. 模态振型图
@@ -4262,7 +4243,7 @@ function [H_exp, Coh, freq] = calculate_experimental_frf(...
             % 质量筛选: SNR > 10dB
             valid_segs = relevant_segs(arrayfun(@(s) ...
                 isfield(s, 'detection_results') && ...
-                s.detection_results.snr > 10, relevant_segs));
+                s.detection_results.snr > 0.1, relevant_segs));
             
             if length(valid_segs) < 1
                 continue;
@@ -4331,7 +4312,7 @@ function linear_params = SAD_Stage1_LinearBaselineIdentification(segments, fs, a
     else
         freq_range = [1, 50]; % 默认
     end
-    coherence_threshold = 0.30;  
+    coherence_threshold = 0.00;  
     
     % 1.1 分方向计算实验FRF矩阵
     directions = {'X', 'Z'};
@@ -5265,13 +5246,10 @@ end
 
 
 % 阶段三: 非线性参数识别 (谐波平衡法)
-function nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(...
-    nl_segments, linear_params, nl_detection, fs)
+function nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(nl_segments, linear_params, nl_detection, fs)
     % SAD阶段三: 非线性参数识别
-    %
     % 根据V3手稿2.3.3节:
     % "采用谐波平衡法(Harmonic Balance Method, HBM)将非线性微分方程转化为代数方程组进行求解"
-    %
     % Duffing模型幅频特性方程:
     % ((k_lin - m*ω² + (3/4)*k3*A²)² + (c_lin*ω + (8/3π)*c2*A*ω)²) * A² = F0²
     
@@ -5287,6 +5265,7 @@ function nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(...
     nonlinear_params.fit_quality = zeros(1, n_positions);
     
     for p = 1:n_positions
+        % 检查该节点是否被标记为非线性
         if ~nl_detection.is_nonlinear(p)
             nonlinear_params.nonlinear_type{p} = 'linear';
             fprintf('    %s: 线性 (跳过)\n', positions{p});
@@ -5309,27 +5288,62 @@ function nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(...
             continue;
         end
         
-        % 获取线性基准参数
-        if isfield(linear_params, 'identified_params_x') && length(linear_params.identified_params_x) >= 5
-            k_linear_vec = linear_params.identified_params_x([1,3,5]);
-            c_linear_vec = linear_params.identified_params_x([2,4,6]);
-        else
-            k_linear_vec = [100, 150, 80];
-            c_linear_vec = [0.2, 0.3, 0.2];
+        % === [核心修改] 自动检测方向并选择对应的线性基准参数 ===
+        current_direction = 'X'; % 默认为X
+        if isfield(pos_nl_segs(1), 'direction')
+            current_direction = pos_nl_segs(1).direction;
         end
         
+        k_linear_vec = [];
+        c_linear_vec = [];
+        omega0 = [];
+
+        if strcmp(current_direction, 'Z')
+            % --- Z 方向处理: 读取 Z 向线性参数 ---
+            if isfield(linear_params, 'identified_params_z') && length(linear_params.identified_params_z) >= 5
+                % identified_params_z 结构: [k_g, c_g, k_rm, c_rm, k_mt, c_mt]
+                % 对应节点索引: Root(1), Mid(2), Tip(3)
+                % Root刚度=k_g, Mid刚度=k_rm, Tip刚度=k_mt
+                k_linear_vec = linear_params.identified_params_z([1,3,5]); 
+                c_linear_vec = linear_params.identified_params_z([2,4,6]);
+            else
+                % 兜底值 (防止Z方向线性识别失败导致此处崩溃)
+                k_linear_vec = [100, 150, 80]; 
+                c_linear_vec = [0.2, 0.3, 0.2];
+                fprintf('      [警告] 缺少Z方向线性参数，使用默认值进行非线性估算。\n');
+            end
+            
+            if isfield(linear_params, 'natural_freqs_z') && ~isempty(linear_params.natural_freqs_z)
+                omega0 = 2 * pi * linear_params.natural_freqs_z(1);
+            else
+                omega0 = 2 * pi * 10;
+            end
+        else
+            % --- X 方向处理: 读取 X 向线性参数 ---
+            if isfield(linear_params, 'identified_params_x') && length(linear_params.identified_params_x) >= 5
+                k_linear_vec = linear_params.identified_params_x([1,3,5]);
+                c_linear_vec = linear_params.identified_params_x([2,4,6]);
+            else
+                k_linear_vec = [100, 150, 80];
+                c_linear_vec = [0.2, 0.3, 0.2];
+                fprintf('      [警告] 缺少X方向线性参数，使用默认值进行非线性估算。\n');
+            end
+            
+            if isfield(linear_params, 'natural_freqs_x') && ~isempty(linear_params.natural_freqs_x)
+                omega0 = 2 * pi * linear_params.natural_freqs_x(1);
+            else
+                omega0 = 2 * pi * 10;
+            end
+        end
+        
+        % 获取当前节点的线性刚度和阻尼
         k_lin = k_linear_vec(p);
         c_lin = c_linear_vec(p);
         
-        if isfield(linear_params, 'natural_freqs_x') && ~isempty(linear_params.natural_freqs_x)
-            omega0 = 2 * pi * linear_params.natural_freqs_x(1);
-        else
-            omega0 = 2 * pi * 10;
-        end
-        
+        % 计算等效质量 (基于线性刚度和基频)
         m_eq = k_lin / omega0^2;
         
-        % 谐波平衡法优化
+        % 谐波平衡法优化求解 k3 和 c2
         [k3, c2, fit_quality] = harmonicBalanceOptimization(...
             freq_amp.amplitudes, freq_amp.frequencies, ...
             k_lin, c_lin, m_eq, omega0);
@@ -5345,8 +5359,8 @@ function nonlinear_params = SAD_Stage3_NonlinearParameterIdentification(...
             nonlinear_params.nonlinear_type{p} = 'softening';
         end
         
-        fprintf('      k3 = %.4e N/m³, c2 = %.4e Ns²/m², 类型: %s\n', ...
-            k3, c2, nonlinear_params.nonlinear_type{p});
+        fprintf('      [%s方向] k3 = %.4e N/m³, c2 = %.4e Ns²/m², 类型: %s\n', ...
+            current_direction, k3, c2, nonlinear_params.nonlinear_type{p});
     end
     
     nonlinear_params.valid = true;

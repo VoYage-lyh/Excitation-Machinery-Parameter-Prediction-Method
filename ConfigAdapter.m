@@ -42,6 +42,13 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     sim_params.parallel_execution_max_workers = preConfig.basic.parallel_max_workers;
     sim_params.workFolder = preConfig.basic.workFolder;
     sim_params.model_name = preConfig.basic.modelName;
+    % 检查 modelName，如果缺失则使用默认仿真文件名
+    if isfield(preConfig.basic, 'modelName')
+        sim_params.model_name = preConfig.basic.modelName;
+    else
+        % 这是库中默认的 Simulink 模型文件名，不要随意更改
+        sim_params.model_name = 'MDOF_Hierarchical_Vibration_Sim'; 
+    end
     sim_params.gravity_g = preConfig.basic.gravity_g;
     sim_params.use_parallel = preConfig.basic.useParallel;
     sim_params.config = preConfig.topology;
@@ -356,13 +363,13 @@ function predefined = generatePredefinedParams(preConfig, identifiedParams)
         geom = type_struct.(name);
         validateBranchGeometry(geom, name);
         
-        % 3. [关键步骤] 获取基准刚度阻尼及非线性参数
+        % 3.  获取基准刚度阻尼及非线性参数
         % 调用更新后的 estimateStiffnessDamping，获取4个基准值和分布因子
-        [k_b, c_b, k3_b, c2_b, specific_taper] = estimateStiffnessDamping(geom, identifiedParams, name);
+        [k_b, c_b, k3_b, c2_b, specific_taper, z_params_measured] = estimateStiffnessDamping(geom, identifiedParams, name);
         
-        % 4. [关键步骤] 生成分段参数 (Root/Mid/Tip)
+        % 4. 生成分段参数 (Root/Mid/Tip)
         % 将线性和非线性基准值传递给生成函数
-        predefined.(name) = generateBranchSegmentParams(geom, k_b, c_b, k3_b, c2_b, specific_taper);
+        predefined.(name) = generateBranchSegmentParams(geom, k_b, c_b, k3_b, c2_b, specific_taper, z_params_measured);
         
         % 标记分枝等级
         predefined.(name).branch_level = lvl;
@@ -425,7 +432,7 @@ end
 %   k_base, c_base: 线性基准值
 %   k3_base, c2_base: 非线性基准值
 %   identified_taper: 分布因子结构体 (含 k, c, k3, c2)
-function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_base, c2_base, identified_taper)
+function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_base, c2_base, identified_taper, z_params_measured)
     
     % --- 验证递减因子 ---
     if nargin < 6 || isempty(identified_taper)
@@ -520,17 +527,27 @@ end
 %   k_base, c_base: 线性基准值
 %   k3_base, c2_base: 非线性基准值
 %   branch_taper: 包含 k, c, k3, c2 分布因子的结构体
-function [k_base, c_base, k3_base, c2_base, branch_taper] = estimateStiffnessDamping(branchGeom, identifiedParams, branchName)
+function [k_base, c_base, k3_base, c2_base, branch_taper, z_params] = estimateStiffnessDamping(branchGeom, identifiedParams, branchName)
     
     target_linear_params = [];
     target_nonlinear_params = [];
-    
+    target_linear_params_z = [];
+
     % 1. 定位参数源 (Linear & Nonlinear)
     % 优先查找 branches.(branchName)
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, branchName)
         branch_data = identifiedParams.branches.(branchName);
         if isfield(branch_data, 'linear'), target_linear_params = branch_data.linear; end
         if isfield(branch_data, 'nonlinear'), target_nonlinear_params = branch_data.nonlinear; end
+        % 尝试获取 Z 方向数据 (假设存储在 linear_z 或同级结构的 identified_params_z 中)
+        if isfield(branch_data, 'linear_z')
+            target_linear_params_z = branch_data.linear_z;
+        elseif isfield(branch_data, 'identified_params_z')
+            % 某些版本可能直接存储在这里
+            target_linear_params_z = struct('K', diag(branch_data.identified_params_z(1:2:end)), ...
+                                            'C', diag(branch_data.identified_params_z(2:2:end)));
+        end
+
     % 回退全局
     elseif isfield(identifiedParams, 'linear')
         target_linear_params = identifiedParams.linear;
@@ -556,7 +573,7 @@ function [k_base, c_base, k3_base, c2_base, branch_taper] = estimateStiffnessDam
     if c_base <= 0, c_base = 1e-3; warning('分枝 "%s" 阻尼异常，使用默认小值。', branchName); end
     c_taper = C_vals / c_base;
     
-    % 3. [新增] 非线性参数处理
+    % 3. 非线性参数处理
     k3_base = 0;
     c2_base = 0;
     k3_taper = [0; 0; 0];
@@ -599,7 +616,22 @@ function [k_base, c_base, k3_base, c2_base, branch_taper] = estimateStiffnessDam
         fprintf('    [!] 分枝 %s 无非线性数据，使用线性模型。\n', branchName);
     end
     
-    % 4. 打包输出
+    % 4. 处理 Z 方向实测数据 (如果存在)
+    z_params = [];
+    if ~isempty(target_linear_params_z) && isfield(target_linear_params_z, 'K')
+        K_vals_z = diag(target_linear_params_z.K);
+        C_vals_z = diag(target_linear_params_z.C);
+        
+        z_params = struct();
+        z_params.k_base = max(K_vals_z);
+        z_params.c_base = max(C_vals_z);
+        z_params.k_taper = K_vals_z / z_params.k_base;
+        z_params.c_taper = C_vals_z / z_params.c_base;
+        
+        fprintf('    [Data] 分枝 %s 检测到 Z 方向实测数据 (k_z_base=%.1f)，将忽略 z_factor。\n', branchName, z_params.k_base);
+    end
+
+    % 5. 打包输出
     branch_taper = struct();
     branch_taper.k = k_taper;
     branch_taper.c = c_taper;
