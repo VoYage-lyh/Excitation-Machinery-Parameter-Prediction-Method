@@ -532,10 +532,10 @@ function exportSimParamsToWorkspace(params)
     end
     exc = params.excitation;
     
-    required_exc_fields = {'type', 'sine_amplitude_y', 'sine_amplitude_z', ...
-                           'frequency_hz', 'phase_y_rad', 'phase_z_rad', ...
-                           'impulse_gain_y', 'impulse_gain_z', 'pulse_period_s', ...
-                           'pulse_width_percent', 'pulse_delay_y_s', 'pulse_delay_z_s', ...
+    required_exc_fields = {'type', 'sine_amplitude_x', 'sine_amplitude_z', ...
+                           'frequency_hz', 'phase_x_rad', 'phase_z_rad', ...
+                           'impulse_gain_x', 'impulse_gain_z', 'pulse_period_s', ...
+                           'pulse_width_percent', 'pulse_delay_x_s', 'pulse_delay_z_s', ...
                            'start_time', 'end_time'};
     for i = 1:length(required_exc_fields)
         if ~isfield(exc, required_exc_fields{i})
@@ -544,16 +544,16 @@ function exportSimParamsToWorkspace(params)
     end
     
     assignin('base', 'excitation_type', exc.type);
-    assignin('base', 'F_excite_y_amplitude', exc.sine_amplitude_y);
+    assignin('base', 'F_excite_x_amplitude', exc.sine_amplitude_x);
     assignin('base', 'F_excite_z_amplitude', exc.sine_amplitude_z);
     assignin('base', 'excitation_frequency_hz', exc.frequency_hz);
-    assignin('base', 'excitation_phase_y_rad', exc.phase_y_rad);
+    assignin('base', 'excitation_phase_x_rad', exc.phase_x_rad);
     assignin('base', 'excitation_phase_z_rad', exc.phase_z_rad);
-    assignin('base', 'impulse_force_gain_y', exc.impulse_gain_y);
+    assignin('base', 'impulse_force_gain_x', exc.impulse_gain_x);
     assignin('base', 'impulse_force_gain_z', exc.impulse_gain_z);
     assignin('base', 'pulse_period_s', exc.pulse_period_s);
     assignin('base', 'pulse_width_percent', exc.pulse_width_percent);
-    assignin('base', 'pulse_phase_delay_y_s', exc.pulse_delay_y_s);
+    assignin('base', 'pulse_phase_delay_x_s', exc.pulse_delay_x_s);
     assignin('base', 'pulse_phase_delay_z_s', exc.pulse_delay_z_s);
     assignin('base', 'excitation_start_time', exc.start_time);
     assignin('base', 'excitation_end_time', exc.end_time);

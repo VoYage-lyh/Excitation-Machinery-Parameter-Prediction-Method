@@ -1196,15 +1196,32 @@ function identified_params = runIdentificationManual(accel_data_cell, force_data
     identified_params.test_config = test_config;
     identified_params.segments = segments;
     
-    % 阶段一: 线性参数
-    identified_params.linear = linear_params;
+    % 阶段一: 线性参数 (X方向/通用容器)
+    identified_params.linear_x = linear_params;
+    
+    % 显式构建 Z 方向线性参数结构体 (linear_z)
+    % 确保 X 和 Z 在数据结构上完全独立且对称
+    identified_params.linear_z = struct();
+    if isfield(linear_params, 'identified_params_z')
+        identified_params.linear_z.identified_params_z = linear_params.identified_params_z;
+        identified_params.linear_z.K_z = linear_params.K_z;
+        identified_params.linear_z.C_z = linear_params.C_z;
+        identified_params.linear_z.natural_freqs = linear_params.natural_freqs_z;
+        identified_params.linear_z.damping_ratios = linear_params.damping_ratios_z;
+        
+        % 如果有FRF数据，也一并转存
+        if isfield(linear_params, 'FRF_matrix_z')
+            identified_params.linear_z.FRF_matrix = linear_params.FRF_matrix_z;
+            identified_params.linear_z.coherence_matrix = linear_params.coherence_matrix_z;
+        end
+    end
     
     % 阶段二: 非线性检测结果
     identified_params.nl_detection = nl_detection;
     
     % 阶段三: 非线性参数
-    identified_params.nonlinear = nonlinear_params_x;     % X方向存入 .nonlinear (保持兼容)
-    identified_params.nonlinear_z = nonlinear_params_z;   % Z方向存入 .nonlinear_z (新增)
+    identified_params.nonlinear_x = nonlinear_params_x;     % X方向存入 .nonlinear (保持兼容)
+    identified_params.nonlinear_z = nonlinear_params_z;   % Z方向存入 .nonlinear_z 
     
     % 阶段四: 脱落力模型
     identified_params.detachment_model = detachment_model;

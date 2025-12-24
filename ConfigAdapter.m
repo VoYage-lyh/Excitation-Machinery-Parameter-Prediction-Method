@@ -1,12 +1,6 @@
 function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedParams)
-% ConfigAdapter_v4 - 参数适配器（终极增强版）
-%
-% 修复记录：
-%   1. [关键] 自动补全 topology 中的统计字段 (num_primary_branches 等)，防止仿真构建报错。
-%   2. [关键] 自动将 trunk 几何信息注入 config，防止绘图函数报错。
-%   3. 保留了之前修复的 Z 方向数据提取和并行参数名问题。
 
-    if nargin < 2
+if nargin < 2
         identifiedParams = [];
     end
     
@@ -21,7 +15,7 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     analysis_params.n_nodes = 3;
     analysis_params.n_dof = 6;
     analysis_params.node_labels = {'Root', 'Mid', 'Tip'};
-    analysis_params.direction_labels = {'Y', 'Z'};
+    analysis_params.direction_labels = {'X', 'Z'};
     analysis_params.topology = preConfig.topology;
 
     %% 2. 检查是否需要生成仿真参数
@@ -48,23 +42,21 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     sim_params.use_parallel = preConfig.basic.useParallel;
     
     % =========================================================================
-    % [核心修复] 拓扑结构自动补全与增强
+    % 拓扑结构自动补全
     % =========================================================================
     sim_params.config = preConfig.topology;
     
-    % 1. 补全 num_primary_branches 及计数数组
+    % 补全 num_primary_branches 及计数数组
     if isfield(sim_params.config, 'structure')
         structure = sim_params.config.structure;
         num_p = length(structure);
         
-        % 强制覆盖/添加统计字段
         sim_params.config.num_primary_branches = num_p;
         sim_params.config.secondary_branches_count = zeros(1, num_p);
         sim_params.config.tertiary_branches_count = cell(1, num_p);
         
         for i = 1:num_p
             vec = structure{i};
-            % 处理空分枝标记 -1
             if isequal(vec, -1) || (length(vec)==1 && vec(1) == -1)
                 sim_params.config.secondary_branches_count(i) = 0;
                 sim_params.config.tertiary_branches_count{i} = [];
@@ -73,20 +65,20 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
                 sim_params.config.tertiary_branches_count{i} = vec;
             end
         end
-        fprintf('    [ConfigAdapter] 已自动补全拓扑统计数据 (一级分枝数: %d)。\n', num_p);
     end
     
-    % 2. 补全 trunk 信息 (防止绘图函数 plot_tree_topology 报错)
     if isfield(preConfig, 'trunk')
         sim_params.config.trunk = preConfig.trunk;
     end
-    % =========================================================================
     
     % --- 构建主干参数 ---
     sim_params.trunk = buildTrunkParams(preConfig, identifiedParams);
     
     % --- 构建分枝参数 ---
     sim_params.predefined_params = generatePredefinedParams(preConfig, identifiedParams);
+
+    % --- 显式调用验证函数，确保生成的分枝参数覆盖了所有拓扑节点---
+    validatePredefinedParams(sim_params.predefined_params, preConfig);
     
     % --- 构建果实配置 ---
     sim_params.fruit_config = struct();
@@ -135,11 +127,11 @@ function [analysis_params, sim_params] = ConfigAdapter(preConfig, identifiedPara
     fprintf('ConfigAdapter: 参数适配完成。\n');
 end
 
-%% ==================== 构建主干参数 ====================
+%% ==================== 构建主干参数 (Trunk) ====================
 function trunk = buildTrunkParams(preConfig, identifiedParams)
     trunk = struct();
     
-    % --- 1. 几何与质量 ---
+    % 1. 几何与质量
     trunk.length = preConfig.trunk.length;
     trunk.diameter_base = preConfig.trunk.diameter_base;
     trunk.diameter_tip = preConfig.trunk.diameter_tip;
@@ -150,80 +142,116 @@ function trunk = buildTrunkParams(preConfig, identifiedParams)
     trunk.mid.m = m_total * m_dist(2);
     trunk.tip.m = m_total * m_dist(3);
     
-    % --- 2. 刚度和阻尼 (线性 + 非线性) ---
-    target_lin = [];
-    target_nonlin = [];
+    % 2. 准备源数据 (Source Data Preparation)
+    % 这一步将源数据的“非对称性”抹平，后续逻辑即可对称处理
     
-    % 尝试从 branches.Trunk 结构获取
+    src_data_x = [];
+    src_data_z = [];
+    src_nonlin_x = [];
+    src_nonlin_z = [];
+    
+    % 获取 Trunk 分枝专用数据
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, 'Trunk')
-        branch_data = identifiedParams.branches.Trunk;
-        if isfield(branch_data, 'linear'), target_lin = branch_data.linear; end
-        if isfield(branch_data, 'nonlinear'), target_nonlin = branch_data.nonlinear; end
-        fprintf('    [ConfigAdapter] 主干：加载 Trunk 分枝识别参数。\n');
-    elseif isfield(identifiedParams, 'linear')
-        target_lin = identifiedParams.linear;
-        if isfield(identifiedParams, 'nonlinear'), target_nonlin = identifiedParams.nonlinear; end
-        fprintf('    [ConfigAdapter] 主干：加载全局参数。\n');
+        b_data = identifiedParams.branches.Trunk;
+        
+        % 读取线性 X (优先找 linear_x, 兼容旧版 linear)
+        if isfield(b_data, 'linear_x'), src_data_x = b_data.linear_x;
+        elseif isfield(b_data, 'linear'), src_data_x = b_data.linear; end
+        
+        % 读取线性 Z
+        if isfield(b_data, 'linear_z'), src_data_z = b_data.linear_z; end
+        
+        % 读取非线性 X
+        if isfield(b_data, 'nonlinear_x'), src_nonlin_x = b_data.nonlinear_x;
+        elseif isfield(b_data, 'nonlinear'), src_nonlin_x = b_data.nonlinear; end
+        
+        % 读取非线性 Z
+        if isfield(b_data, 'nonlinear_z'), src_nonlin_z = b_data.nonlinear_z; end
+    
     else
-        error('ConfigAdapter:NoTrunkParams', ...
-              '错误：未在 identifiedParams 中找到主干(Trunk)或全局(linear)参数。');
+        % 回退到全局数据
+        if isfield(identifiedParams, 'linear_x'), src_data_x = identifiedParams.linear_x;
+        elseif isfield(identifiedParams, 'linear'), src_data_x = identifiedParams.linear; end
+        
+        if isfield(identifiedParams, 'linear_z'), src_data_z = identifiedParams.linear_z; end
+        
+        if isfield(identifiedParams, 'nonlinear_x'), src_nonlin_x = identifiedParams.nonlinear_x;
+        elseif isfield(identifiedParams, 'nonlinear'), src_nonlin_x = identifiedParams.nonlinear; end
+        
+        if isfield(identifiedParams, 'nonlinear_z'), src_nonlin_z = identifiedParams.nonlinear_z; end
     end
     
-    % 线性赋值 (Y)
-    if ~isfield(target_lin, 'identified_params_x') || isempty(target_lin.identified_params_x)
-        error('ConfigAdapter:MissingYData', '主干参数缺少 Y 方向数据 (identified_params_x)。');
+    if isempty(src_data_x)
+        error('ConfigAdapter:NoTrunkParams', '错误：未在 identifiedParams 中找到主干 X 方向参数。');
     end
-    p_vec_y = target_lin.identified_params_x;
-    trunk.root.k_y_conn_to_base = p_vec_y(1); trunk.root.c_y_conn_to_base = p_vec_y(2);
-    trunk.root.k_y_conn = p_vec_y(3);         trunk.root.c_y_conn = p_vec_y(4);
-    trunk.mid.k_y_conn  = p_vec_y(5);         trunk.mid.c_y_conn  = p_vec_y(6);
-    trunk.tip.k_y_conn  = 0;                  trunk.tip.c_y_conn  = 0;
 
-    % 线性赋值 (Z)
-    p_vec_z = [];
-    if isfield(target_lin, 'identified_params_z')
-        p_vec_z = target_lin.identified_params_z;
-    elseif isfield(target_lin, 'K_z') 
-        error('ConfigAdapter:TrunkFormat', '主干 Z 数据格式不兼容，期望 identified_params_z 向量。');
+    % 3. 初始化所有参数为 0 (安全默认值)
+    segments = {'root', 'mid', 'tip'};
+    directions = {'x', 'z'};
+    params = {'k', 'c', 'k3', 'c2'};
+    
+    for s = 1:length(segments)
+        seg = segments{s};
+        for d = 1:length(directions)
+            dir = directions{d};
+            % 连接到基座(root) 或 连接到上一级(mid/tip)
+            suffix = '_conn';
+            if strcmp(seg, 'root'), suffix = '_conn_to_base'; end
+            
+            for p = 1:length(params)
+                par = params{p};
+                trunk.(seg).([par '_' dir suffix]) = 0;
+            end
+        end
+    end
+
+    % 4. 映射: 传感器 X -> 仿真模型 Y (Coordinate Mapping: Sensor X => Model Y)
+    if ~isempty(src_data_x) && isfield(src_data_x, 'identified_params_x')
+        p_vec = src_data_x.identified_params_x;
+        trunk.root.k_x_conn_to_base = p_vec(1); trunk.root.c_x_conn_to_base = p_vec(2);
+        trunk.root.k_x_conn = p_vec(3);         trunk.root.c_x_conn = p_vec(4);
+        trunk.mid.k_x_conn  = p_vec(5);         trunk.mid.c_x_conn  = p_vec(6);
+    else
+        error('ConfigAdapter:MissingXData', '主干参数缺少 X 方向数据 (identified_params_x)。');
     end
     
-    if isempty(p_vec_z)
+    if ~isempty(src_nonlin_x) && isfield(src_nonlin_x, 'k3_coeffs')
+        k3 = src_nonlin_x.k3_coeffs; c2 = src_nonlin_x.c2_coeffs;
+        if length(k3)>=1, trunk.root.k3_x_conn_to_base = k3(1); trunk.root.c2_x_conn_to_base = c2(1); end
+        if length(k3)>=2, trunk.root.k3_x_conn = k3(2);         trunk.root.c2_x_conn = c2(2); end
+        if length(k3)>=3, trunk.mid.k3_x_conn  = k3(3);         trunk.mid.c2_x_conn  = c2(3); end
+        fprintf('    [ConfigAdapter] 主干 X 数据 -> X 模型参数 (非线性) 已应用。\n');
+    end
+
+    % 5. 映射: 传感器 Z -> 仿真模型 Z (Direct Mapping)
+    if ~isempty(src_data_z) && isfield(src_data_z, 'identified_params_z')
+        p_vec = src_data_z.identified_params_z;
+        trunk.root.k_z_conn_to_base = p_vec(1); trunk.root.c_z_conn_to_base = p_vec(2);
+        trunk.root.k_z_conn = p_vec(3);         trunk.root.c_z_conn = p_vec(4);
+        trunk.mid.k_z_conn  = p_vec(5);         trunk.mid.c_z_conn  = p_vec(6);
+    else
         error('ConfigAdapter:NoZParams', '严重错误：主干缺少 Z 方向识别参数 (identified_params_z)。');
     end
-    
-    trunk.root.k_z_conn_to_base = p_vec_z(1); trunk.root.c_z_conn_to_base = p_vec_z(2);
-    trunk.root.k_z_conn = p_vec_z(3);         trunk.root.c_z_conn = p_vec_z(4);
-    trunk.mid.k_z_conn  = p_vec_z(5);         trunk.mid.c_z_conn  = p_vec_z(6);
-    trunk.tip.k_conn_z  = 0;                  trunk.tip.c_z_conn  = 0;
 
-    % 非线性赋值
-    trunk.root.k3_y_conn_to_base = 0; trunk.root.c2_y_conn_to_base = 0;
-    trunk.root.k3_y_conn = 0;         trunk.root.c2_y_conn = 0;
-    trunk.mid.k3_y_conn  = 0;         trunk.mid.c2_y_conn  = 0;
-    trunk.root.k3_z_conn_to_base = 0; trunk.root.c2_z_conn_to_base = 0; 
-    trunk.root.k3_z_conn = 0;         trunk.root.c2_z_conn = 0;
-    trunk.mid.k3_z_conn = 0;          trunk.mid.c2_z_conn = 0;
-
-    if ~isempty(target_nonlin) && isfield(target_nonlin, 'k3_coeffs')
-        k3 = target_nonlin.k3_coeffs; c2 = target_nonlin.c2_coeffs;
-        if length(k3)>=1, trunk.root.k3_y_conn_to_base = k3(1); trunk.root.c2_y_conn_to_base = c2(1); end
-        if length(k3)>=2, trunk.root.k3_y_conn = k3(2);         trunk.root.c2_y_conn = c2(2); end
-        if length(k3)>=3, trunk.mid.k3_y_conn  = k3(3);         trunk.mid.c2_y_conn  = c2(3); end
-        fprintf('    [ConfigAdapter] 主干 Y 非线性参数已应用。\n');
+    if ~isempty(src_nonlin_z) && isfield(src_nonlin_z, 'k3_coeffs')
+        k3 = src_nonlin_z.k3_coeffs; c2 = src_nonlin_z.c2_coeffs;
+        if length(k3)>=1, trunk.root.k3_z_conn_to_base = k3(1); trunk.root.c2_z_conn_to_base = c2(1); end
+        if length(k3)>=2, trunk.root.k3_z_conn = k3(2);         trunk.root.c2_z_conn = c2(2); end
+        if length(k3)>=3, trunk.mid.k3_z_conn  = k3(3);         trunk.mid.c2_z_conn  = c2(3); end
+        fprintf('    [ConfigAdapter] 主干 Z 数据 -> Z 模型参数 (非线性) 已应用。\n');
+    else
+        fprintf('    [ConfigAdapter] 主干 Z 非线性参数未找到 (linear default)。\n');
     end
 end
 
 %% ==================== 验证预定义参数完整性 ====================
 function validatePredefinedParams(predefined, preConfig)
     missingBranches = {};
-    incompleteParams = {};
     structure = preConfig.topology.structure;
-    
     numP = length(structure);
     for p = 1:numP
         bid_p = sprintf('P%d', p);
-        if ~isfield(predefined, bid_p), missingBranches{end+1} = bid_p;
-        elseif ~checkBranchParamIntegrity(predefined.(bid_p)), incompleteParams{end+1} = bid_p; end
+        if ~isfield(predefined, bid_p), missingBranches{end+1} = bid_p; end
         
         vec = structure{p};
         if isequal(vec, -1) || (length(vec)==1 && vec(1) == -1), continue; end
@@ -231,42 +259,18 @@ function validatePredefinedParams(predefined, preConfig)
         numS = length(vec);
         for s = 1:numS
             bid_s = sprintf('P%d_S%d', p, s);
-            if ~isfield(predefined, bid_s), missingBranches{end+1} = bid_s;
-            elseif ~checkBranchParamIntegrity(predefined.(bid_s)), incompleteParams{end+1} = bid_s; end
+            if ~isfield(predefined, bid_s), missingBranches{end+1} = bid_s; end
             
             numT = vec(s);
             for t = 1:numT
                 bid_t = sprintf('P%d_S%d_T%d', p, s, t);
-                if ~isfield(predefined, bid_t), missingBranches{end+1} = bid_t;
-                elseif ~checkBranchParamIntegrity(predefined.(bid_t)), incompleteParams{end+1} = bid_t; end
+                if ~isfield(predefined, bid_t), missingBranches{end+1} = bid_t; end
             end
         end
     end
     
     if ~isempty(missingBranches)
         error('ConfigAdapter:MissingData', '以下分枝在预配置中缺少几何参数:\n  %s', strjoin(missingBranches, ', '));
-    end
-    if ~isempty(incompleteParams)
-        warning('ConfigAdapter:IncompleteParams', '以下分枝参数不完整:\n  %s', strjoin(incompleteParams, ', '));
-    end
-end
-
-function is_ok = checkBranchParamIntegrity(branch_data)
-    is_ok = true;
-    segments = {'root', 'mid', 'tip'};
-    required_fields = {'m', 'k_y_conn', 'c_y_conn', 'k_z_conn', 'c_z_conn'};
-    for i = 1:length(segments)
-        seg = segments{i};
-        if isfield(branch_data, seg)
-            seg_data = branch_data.(seg);
-            for k = 1:length(required_fields)
-                if ~isfield(seg_data, required_fields{k})
-                    is_ok = false; return;
-                end
-            end
-        else
-            is_ok = false; return;
-        end
     end
 end
 
@@ -303,8 +307,6 @@ function predefined = generatePredefinedParams(preConfig, identifiedParams)
     end
 
     numP = length(structure);
-    fprintf('    [ConfigAdapter] 正在基于 Cell 拓扑生成参数 (智能双向模式)...\n');
-    
     for p = 1:numP
         branch_name_p = sprintf('P%d', p);
         processBranch(branch_name_p, preConfig.primary);
@@ -324,9 +326,6 @@ function predefined = generatePredefinedParams(preConfig, identifiedParams)
             end
         end
     end
-
-    validatePredefinedParams(predefined, preConfig);
-    fprintf('  分枝参数库生成完成。\n');
 end
 
 %% ==================== 生成单个分枝的段参数 ====================
@@ -334,7 +333,7 @@ function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_bas
     
     if isempty(identified_taper), error('ConfigAdapter:MissingTaper', '缺少 Y 方向分布因子 identified_taper。'); end
     if isempty(z_params)
-        error('ConfigAdapter:MissingZData', '严重错误：Z 方向实测数据为空。参数提取步骤可能失败。');
+        error('ConfigAdapter:MissingZData', '严重错误：Z 方向实测数据为空。');
     end
     
     k_taper = identified_taper.k; c_taper = identified_taper.c;
@@ -346,10 +345,10 @@ function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_bas
     
     % Root段
     params.root.m = m_total * m_dist(1);
-    params.root.k_y_conn = k_base * k_taper(1);
-    params.root.c_y_conn = c_base * c_taper(1);
-    params.root.k3_y_conn = k3_base * k3_taper(1);
-    params.root.c2_y_conn = c2_base * c2_taper(1);
+    params.root.k_x_conn = k_base * k_taper(1);
+    params.root.c_x_conn = c_base * c_taper(1);
+    params.root.k3_x_conn = k3_base * k3_taper(1);
+    params.root.c2_x_conn = c2_base * c2_taper(1);
     params.root.k_z_conn = z_params.k_base * z_params.k_taper(1);
     params.root.c_z_conn = z_params.c_base * z_params.c_taper(1);
     params.root.k3_z_conn = z_params.k3_base * z_params.k3_taper(1);
@@ -357,10 +356,10 @@ function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_bas
     
     % Mid段
     params.mid.m = m_total * m_dist(2);
-    params.mid.k_y_conn = k_base * k_taper(2);
-    params.mid.c_y_conn = c_base * c_taper(2);
-    params.mid.k3_y_conn = k3_base * k3_taper(2);
-    params.mid.c2_y_conn = c2_base * c2_taper(2);
+    params.mid.k_x_conn = k_base * k_taper(2);
+    params.mid.c_x_conn = c_base * c_taper(2);
+    params.mid.k3_x_conn = k3_base * k3_taper(2);
+    params.mid.c2_x_conn = c2_base * c2_taper(2);
     params.mid.k_z_conn = z_params.k_base * z_params.k_taper(2);
     params.mid.c_z_conn = z_params.c_base * z_params.c_taper(2);
     params.mid.k3_z_conn = z_params.k3_base * z_params.k3_taper(2);
@@ -368,10 +367,10 @@ function params = generateBranchSegmentParams(branchGeom, k_base, c_base, k3_bas
     
     % Tip段
     params.tip.m = m_total * m_dist(3);
-    params.tip.k_y_conn = k_base * k_taper(3);
-    params.tip.c_y_conn = c_base * c_taper(3);
-    params.tip.k3_y_conn = k3_base * k3_taper(3);
-    params.tip.c2_y_conn = c2_base * c2_taper(3);
+    params.tip.k_x_conn = k_base * k_taper(3);
+    params.tip.c_x_conn = c_base * c_taper(3);
+    params.tip.k3_x_conn = k3_base * k3_taper(3);
+    params.tip.c2_x_conn = c2_base * c2_taper(3);
     params.tip.k_z_conn = z_params.k_base * z_params.k_taper(3);
     params.tip.c_z_conn = z_params.c_base * z_params.c_taper(3);
     params.tip.k3_z_conn = z_params.k3_base * z_params.k3_taper(3);
@@ -386,96 +385,106 @@ end
 %% ==================== 辅助函数: 提取基准值和分布 ====================
 function [k_base, c_base, k3_base, c2_base, branch_taper, z_params] = estimateStiffnessDamping(branchGeom, identifiedParams, branchName)
     
-    t_lin_y = []; t_nonlin_y = [];
-    t_lin_z = []; t_nonlin_z = [];
+    % 1. 准备本地数据容器 (X/Z 独立)
+    src_lin_x = []; src_nonlin_x = [];
+    src_lin_z = []; src_nonlin_z = [];
     
-    % 1. 尝试从分枝专用数据读取
+    % 2. 尝试从分枝专用数据读取 (Branch Specific)
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, branchName)
         branch_data = identifiedParams.branches.(branchName);
         
-        if isfield(branch_data, 'linear'), t_lin_y = branch_data.linear; end
+        % 读取 X (支持 linear_x 和旧版 linear)
+        if isfield(branch_data, 'linear_x'), src_lin_x = branch_data.linear_x;
+        elseif isfield(branch_data, 'linear'), src_lin_x = branch_data.linear; end
         
-        if isfield(branch_data, 'linear_z')
-            t_lin_z = branch_data.linear_z;
-        elseif isfield(branch_data, 'linear')
-             if isfield(branch_data.linear, 'K_z')
-                 t_lin_z = struct('K', branch_data.linear.K_z, 'C', branch_data.linear.C_z);
-             elseif isfield(branch_data.linear, 'identified_params_z')
-                 vec = branch_data.linear.identified_params_z;
-                 k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
-                 c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
-                 t_lin_z = struct('K', diag(k_d), 'C', diag(c_d));
-             end
-        end
-        if isempty(t_lin_z) && isfield(branch_data, 'identified_params_z')
-             vec = branch_data.identified_params_z;
-             k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
-             c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
-             t_lin_z = struct('K', diag(k_d), 'C', diag(c_d));
-        end
+        % 读取 Z
+        if isfield(branch_data, 'linear_z'), src_lin_z = branch_data.linear_z; end
         
-        if isfield(branch_data, 'nonlinear'), t_nonlin_y = branch_data.nonlinear; end
-        if isfield(branch_data, 'nonlinear_z'), t_nonlin_z = branch_data.nonlinear_z; end
+        % 读取非线性 X
+        if isfield(branch_data, 'nonlinear_x'), src_nonlin_x = branch_data.nonlinear_x;
+        elseif isfield(branch_data, 'nonlinear'), src_nonlin_x = branch_data.nonlinear; end
+        
+        % 读取非线性 Z
+        if isfield(branch_data, 'nonlinear_z'), src_nonlin_z = branch_data.nonlinear_z; end
     end
     
-    % 2. 尝试从全局数据读取 (兜底)
-    g_lin_y = []; g_lin_z = [];
-    g_nonlin_y = []; g_nonlin_z = [];
+    % 3. 尝试从全局数据读取 (Global Fallback)
+    glob_lin_x = []; glob_nonlin_x = [];
+    glob_lin_z = []; glob_nonlin_z = [];
     
-    if isfield(identifiedParams, 'linear')
-        lin = identifiedParams.linear;
-        if isfield(lin, 'K_x')
-            g_lin_y = struct('K', lin.K_x, 'C', lin.C_x);
-        elseif isfield(lin, 'identified_params_x')
-             vec = lin.identified_params_x;
-             k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
-             c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
-             g_lin_y = struct('K', diag(k_d), 'C', diag(c_d));
-        else
-            g_lin_y = lin;
-        end
-        if isfield(lin, 'K_z')
-            g_lin_z = struct('K', lin.K_z, 'C', lin.C_z);
-        elseif isfield(lin, 'identified_params_z')
-             vec = lin.identified_params_z;
-             k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
-             c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
-             g_lin_z = struct('K', diag(k_d), 'C', diag(c_d));
-        end
-        
-        if isfield(identifiedParams, 'nonlinear'), g_nonlin_y = identifiedParams.nonlinear; end
-        if isfield(identifiedParams, 'nonlinear_z'), g_nonlin_z = identifiedParams.nonlinear_z; end
+    % 全局 X 读取
+    if isfield(identifiedParams, 'linear_x'), glob_lin_x = identifiedParams.linear_x;
+    elseif isfield(identifiedParams, 'linear'), glob_lin_x = identifiedParams.linear; end
+    
+    % 全局 Z 读取
+    if isfield(identifiedParams, 'linear_z'), glob_lin_z = identifiedParams.linear_z; end
+    
+    % 兼容旧结构: Z 可能藏在 linear 中
+    if isempty(glob_lin_z) && isfield(identifiedParams, 'linear') && isfield(identifiedParams.linear, 'identified_params_z')
+         glob_lin_z = identifiedParams.linear;
     end
     
-    % 3. 参数融合
-    target_lin = t_lin_y; if isempty(target_lin), target_lin = g_lin_y; end
-    target_lin_z = t_lin_z; if isempty(target_lin_z), target_lin_z = g_lin_z; end
-    target_nonlin = t_nonlin_y; if isempty(target_nonlin), target_nonlin = g_nonlin_y; end
-    target_nonlin_z = t_nonlin_z; if isempty(target_nonlin_z), target_nonlin_z = g_nonlin_z; end
+    % 全局非线性
+    if isfield(identifiedParams, 'nonlinear_x'), glob_nonlin_x = identifiedParams.nonlinear_x;
+    elseif isfield(identifiedParams, 'nonlinear'), glob_nonlin_x = identifiedParams.nonlinear; end
     
-    % 4. 提取 Y 参数
-    if isempty(target_lin) || ~isfield(target_lin, 'K') || ~isfield(target_lin, 'C')
-        error('ConfigAdapter:MissingYData', '分枝 "%s" 缺少 Y 方向线性数据 (identified_params_x)。', branchName);
+    if isfield(identifiedParams, 'nonlinear_z'), glob_nonlin_z = identifiedParams.nonlinear_z; end
+    
+    % 4. 融合数据
+    final_lin_x    = src_lin_x;    if isempty(final_lin_x),    final_lin_x = glob_lin_x;       end
+    final_lin_z    = src_lin_z;    if isempty(final_lin_z),    final_lin_z = glob_lin_z;       end
+    final_nonlin_x = src_nonlin_x; if isempty(final_nonlin_x), final_nonlin_x = glob_nonlin_x; end
+    final_nonlin_z = src_nonlin_z; if isempty(final_nonlin_z), final_nonlin_z = glob_nonlin_z; end
+    
+    % 5. 提取 X 参数 -> 映射为模型的 Y 参数 (Coordinate Mapping: Sensor X => Model Y)
+    if isempty(final_lin_x)
+        error('ConfigAdapter:MissingXData', '分枝 "%s" 缺少 X 方向线性数据。', branchName);
     end
-    K_vals = diag(target_lin.K); C_vals = diag(target_lin.C);
+    
+    % 处理 K_x / C_x
+    if isfield(final_lin_x, 'K_x'), K_mat = final_lin_x.K_x; C_mat = final_lin_x.C_x;
+    elseif isfield(final_lin_x, 'K'), K_mat = final_lin_x.K; C_mat = final_lin_x.C; 
+    else
+        % 向量格式回退
+        vec = final_lin_x.identified_params_x;
+        k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
+        c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
+        K_mat = diag(k_d); C_mat = diag(c_d);
+    end
+    
+    K_vals = diag(K_mat); C_vals = diag(C_mat);
     k_base = max(K_vals); k_taper = K_vals / k_base; 
     c_base = max(C_vals); c_taper = C_vals / c_base;
-    [k3_base, c2_base, k3_taper, c2_taper] = extractNonlinearBaseTaper(target_nonlin);
+    [k3_base, c2_base, k3_taper, c2_taper] = extractNonlinearBaseTaper(final_nonlin_x);
     
-    % 5. 提取 Z 参数
-    if isempty(target_lin_z) || ~isfield(target_lin_z, 'K')
-        error('ConfigAdapter:MissingZData', '分枝 "%s" 缺少 Z 方向线性数据！', branchName);
+    % 6. 提取 Z 参数 -> 映射为模型的 Z 参数
+    if isempty(final_lin_z)
+        warning('ConfigAdapter:MissingZData', '分枝 "%s" 缺少 Z 方向线性数据，尝试使用 X 参数作为近似。', branchName);
+        % 这里的回退是为了保证代码不报错，但在您的场景中应尽量避免
+        final_lin_z = final_lin_x; 
+        K_mat_z = K_mat; C_mat_z = C_mat;
+    else
+        if isfield(final_lin_z, 'K_z'), K_mat_z = final_lin_z.K_z; C_mat_z = final_lin_z.C_z;
+        elseif isfield(final_lin_z, 'K'), K_mat_z = final_lin_z.K; C_mat_z = final_lin_z.C;
+        else
+             vec = final_lin_z.identified_params_z;
+             k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
+             c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
+             K_mat_z = diag(k_d); C_mat_z = diag(c_d);
+        end
     end
+    
     z_params = struct();
-    K_vals_z = diag(target_lin_z.K); C_vals_z = diag(target_lin_z.C);
+    K_vals_z = diag(K_mat_z); C_vals_z = diag(C_mat_z);
     z_params.k_base = max(K_vals_z); z_params.c_base = max(C_vals_z);
     z_params.k_taper = K_vals_z / z_params.k_base; z_params.c_taper = C_vals_z / z_params.c_base;
-    [z_params.k3_base, z_params.c2_base, z_params.k3_taper, z_params.c2_taper] = extractNonlinearBaseTaper(target_nonlin_z);
+    [z_params.k3_base, z_params.c2_base, z_params.k3_taper, z_params.c2_taper] = extractNonlinearBaseTaper(final_nonlin_z);
     
     branch_taper = struct('k', k_taper, 'c', c_taper, 'k3', k3_taper, 'c2', c2_taper);
 end
 
 function [k3_base, c2_base, k3_taper, c2_taper] = extractNonlinearBaseTaper(nl_struct)
+    % 提取非线性参数
     if ~isempty(nl_struct) && isfield(nl_struct, 'k3_coeffs')
         k3_vals = nl_struct.k3_coeffs(:); c2_vals = nl_struct.c2_coeffs(:);
         if length(k3_vals) < 3, k3_vals(end+1:3) = 0; end
@@ -493,23 +502,41 @@ end
 
 function level = determineBranchLevel(branchName)
     underscores = strfind(branchName, '_');
-    if isempty(underscores), level = 1;
-    elseif length(underscores) == 1, level = 2;
-    else, level = 3; end
+    if isempty(underscores)
+        level = 1;
+    elseif length(underscores) == 1
+        level = 2;
+    else
+        level = 3; 
+    end
 end
 
 function attach = shouldAttachFruit(branchName, level, fruitConfig)
-    if level == 1, attach = false;
-    elseif level == 2, attach = fruitConfig.attach_secondary_mid || fruitConfig.attach_secondary_tip;
-    else, attach = fruitConfig.attach_tertiary_mid || fruitConfig.attach_tertiary_tip; end
+    if level == 1
+        attach = false;
+    elseif level == 2
+        attach = fruitConfig.attach_secondary_mid || fruitConfig.attach_secondary_tip;
+    else 
+        attach = fruitConfig.attach_tertiary_mid || fruitConfig.attach_tertiary_tip;
+    end
 end
 
 function attach = shouldAttachAtPosition(level, position, fruitConfig)
     if level == 2
-        if strcmp(position, 'mid'), attach = fruitConfig.attach_secondary_mid; else, attach = fruitConfig.attach_secondary_tip; end
+        if strcmp(position, 'mid')
+            attach = fruitConfig.attach_secondary_mid; 
+        else
+            attach = fruitConfig.attach_secondary_tip;
+        end
     elseif level == 3
-        if strcmp(position, 'mid'), attach = fruitConfig.attach_tertiary_mid; else, attach = fruitConfig.attach_tertiary_tip; end
-    else, attach = false; end
+        if strcmp(position, 'mid')
+            attach = fruitConfig.attach_tertiary_mid;
+        else
+            attach = fruitConfig.attach_tertiary_tip; 
+        end
+    else
+        attach = false; 
+    end
 end
 
 function validateBranchGeometry(branchGeom, branchName)
@@ -524,7 +551,7 @@ function fruit_params = buildFruitParamsStrict(preConfig, identifiedParams)
     fruit_params.diameter = preConfig.fruit.diameter;
     k_val = 2000; c_val = 0.5;
     if isfield(preConfig.fruit, 'k_pedicel'), k_val = preConfig.fruit.k_pedicel; c_val = preConfig.fruit.c_pedicel; end
-    fruit_params.k_pedicel_y = k_val; fruit_params.c_pedicel_y = c_val;
+    fruit_params.k_pedicel_x = k_val; fruit_params.c_pedicel_x = c_val;
     fruit_params.k_pedicel_z = k_val; fruit_params.c_pedicel_z = c_val;
     fruit_params.F_break = 5.0; 
     

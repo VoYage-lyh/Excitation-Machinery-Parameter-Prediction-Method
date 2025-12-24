@@ -167,16 +167,16 @@ function config = getDefaultConfig()
     
     % 激励参数
     config.excitation.type = 'impulse';
-    config.excitation.sine_amplitude_y = 355;
+    config.excitation.sine_amplitude_x = 355;
     config.excitation.sine_amplitude_z = 275;
     config.excitation.frequency_hz = 7;         % 将由识别结果更新
-    config.excitation.phase_y_rad = 0;
+    config.excitation.phase_x_rad = 0;
     config.excitation.phase_z_rad = pi/2;
-    config.excitation.impulse_gain_y = 14500;
+    config.excitation.impulse_gain_x = 14500;
     config.excitation.impulse_gain_z = 15500;
     config.excitation.pulse_period_s = 20;
     config.excitation.pulse_width_percent = 0.025;
-    config.excitation.pulse_delay_y_s = 0;
+    config.excitation.pulse_delay_x_s = 0;
     config.excitation.pulse_delay_z_s = 0;
     config.excitation.start_time = 0.5;
     config.excitation.end_time = 3.0;
@@ -580,10 +580,10 @@ function createExcitationPanel(parent, config)
                         'Position', [0.02 0.45 0.46 0.38]);
     
     sineParams = {
-        'Y幅值 (N):', 'edit_sine_ampY', num2str(config.excitation.sine_amplitude_y);
+        'X幅值 (N):', 'edit_sine_ampY', num2str(config.excitation.sine_amplitude_x);
         'Z幅值 (N):', 'edit_sine_ampZ', num2str(config.excitation.sine_amplitude_z);
         '频率 (Hz):', 'edit_sine_freq', num2str(config.excitation.frequency_hz);
-        'Y相位 (rad):', 'edit_sine_phaseY', num2str(config.excitation.phase_y_rad);
+        'X相位 (rad):', 'edit_sine_phaseX', num2str(config.excitation.phase_x_rad);
         'Z相位 (rad):', 'edit_sine_phaseZ', num2str(config.excitation.phase_z_rad);
     };
     
@@ -603,11 +603,11 @@ function createExcitationPanel(parent, config)
                            'Position', [0.52 0.45 0.46 0.38]);
     
     impulseParams = {
-        'Y峰值力 (N):', 'edit_impulse_gainY', num2str(config.excitation.impulse_gain_y);
+        'X峰值力 (N):', 'edit_impulse_gainX', num2str(config.excitation.impulse_gain_x);
         'Z峰值力 (N):', 'edit_impulse_gainZ', num2str(config.excitation.impulse_gain_z);
         '脉冲周期 (s):', 'edit_pulse_period', num2str(config.excitation.pulse_period_s);
         '脉宽 (%):', 'edit_pulse_width', num2str(config.excitation.pulse_width_percent);
-        'Y延迟 (s):', 'edit_pulse_delayY', num2str(config.excitation.pulse_delay_y_s);
+        'X延迟 (s):', 'edit_pulse_delayX', num2str(config.excitation.pulse_delay_x_s);
         'Z延迟 (s):', 'edit_pulse_delayZ', num2str(config.excitation.pulse_delay_z_s);
     };
     
@@ -978,16 +978,16 @@ function config = collectAllParameters(fig)
         else
             config.excitation.type = 'impulse';
         end
-        config.excitation.sine_amplitude_y = getEditValue(fig, 'edit_sine_ampY', 'double');
+        config.excitation.sine_amplitude_x = getEditValue(fig, 'edit_sine_ampx', 'double');
         config.excitation.sine_amplitude_z = getEditValue(fig, 'edit_sine_ampZ', 'double');
         config.excitation.frequency_hz = getEditValue(fig, 'edit_sine_freq', 'double');
-        config.excitation.phase_y_rad = getEditValue(fig, 'edit_sine_phaseY', 'double');
+        config.excitation.phase_x_rad = getEditValue(fig, 'edit_sine_phasex', 'double');
         config.excitation.phase_z_rad = getEditValue(fig, 'edit_sine_phaseZ', 'double');
-        config.excitation.impulse_gain_y = getEditValue(fig, 'edit_impulse_gainY', 'double');
+        config.excitation.impulse_gain_x = getEditValue(fig, 'edit_impulse_gainX', 'double');
         config.excitation.impulse_gain_z = getEditValue(fig, 'edit_impulse_gainZ', 'double');
         config.excitation.pulse_period_s = getEditValue(fig, 'edit_pulse_period', 'double');
         config.excitation.pulse_width_percent = getEditValue(fig, 'edit_pulse_width', 'double');
-        config.excitation.pulse_delay_y_s = getEditValue(fig, 'edit_pulse_delayY', 'double');
+        config.excitation.pulse_delay_x_s = getEditValue(fig, 'edit_pulse_delayX', 'double');
         config.excitation.pulse_delay_z_s = getEditValue(fig, 'edit_pulse_delayZ', 'double');
         config.excitation.start_time = getEditValue(fig, 'edit_excite_start', 'double');
         config.excitation.end_time = getEditValue(fig, 'edit_excite_end', 'double');
@@ -1109,16 +1109,16 @@ function updateUIFromConfig(fig, config)
         end
     end
     
-    setEditValue(fig, 'edit_sine_amp_y', num2str(config.excitation.sine_amplitude_y));
+    setEditValue(fig, 'edit_sine_amp_x', num2str(config.excitation.sine_amplitude_x));
     setEditValue(fig, 'edit_sine_amp_z', num2str(config.excitation.sine_amplitude_z));
     setEditValue(fig, 'edit_frequency', num2str(config.excitation.frequency_hz));
-    setEditValue(fig, 'edit_phase_y', num2str(config.excitation.phase_y_rad));
+    setEditValue(fig, 'edit_phase_x', num2str(config.excitation.phase_x_rad));
     setEditValue(fig, 'edit_phase_z', num2str(config.excitation.phase_z_rad));
-    setEditValue(fig, 'edit_impulse_gain_y', num2str(config.excitation.impulse_gain_y));
+    setEditValue(fig, 'edit_impulse_gain_x', num2str(config.excitation.impulse_gain_x));
     setEditValue(fig, 'edit_impulse_gain_z', num2str(config.excitation.impulse_gain_z));
     setEditValue(fig, 'edit_pulse_period', num2str(config.excitation.pulse_period_s));
     setEditValue(fig, 'edit_pulse_width', num2str(config.excitation.pulse_width_percent));
-    setEditValue(fig, 'edit_pulse_delay_y', num2str(config.excitation.pulse_delay_y_s));
+    setEditValue(fig, 'edit_pulse_delay_x', num2str(config.excitation.pulse_delay_x_s));
     setEditValue(fig, 'edit_pulse_delay_z', num2str(config.excitation.pulse_delay_z_s));
     
     if isfield(config.excitation, 'start_time')
