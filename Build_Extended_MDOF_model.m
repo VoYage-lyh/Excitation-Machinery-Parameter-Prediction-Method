@@ -2300,35 +2300,35 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 
                 % --- 绘制四个子图 ---
                 
-                % Y-位移 (显示动态位移)
+                % X-位移 (显示动态位移)
                 ax1 = nexttile; hold(ax1, 'on'); grid on;
-                plot_dynamic_signal(ax1, plot_signal_data_map, current_fruit_signal_info_for_plot.y_disp_varname, '果实', '-', 'b', true); % <-- 修改点
-                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_y_disp_varname')
-                    plot_dynamic_signal(ax1, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_y_disp_varname, '分枝尖端', '--', 'r', true); % <-- 修改点
+                plot_dynamic_signal(ax1, plot_signal_data_map, current_fruit_signal_info_for_plot.x_disp_varname, '果实', '-', 'b', true); 
+                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_x_disp_varname')
+                    plot_dynamic_signal(ax1, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_x_disp_varname, '分枝尖端', '--', 'r', true); 
                 end
-                title(ax1, 'Y方向动态位移'); ylabel(ax1, '位移 (m)'); xlabel(ax1, '时间 (s)'); legend(ax1, 'show', 'Location','best');
+                title(ax1, 'X方向动态位移'); ylabel(ax1, '位移 (m)'); xlabel(ax1, '时间 (s)'); legend(ax1, 'show', 'Location','best');
                 
                 % Z-位移 (显示动态位移)
                 ax2 = nexttile; hold(ax2, 'on'); grid on;
-                plot_dynamic_signal(ax2, plot_signal_data_map, current_fruit_signal_info_for_plot.z_disp_varname, '果实', '-', 'b', true); % <-- 修改点
+                plot_dynamic_signal(ax2, plot_signal_data_map, current_fruit_signal_info_for_plot.z_disp_varname, '果实', '-', 'b', true); 
                 if isfield(current_fruit_signal_info_for_plot, 'parent_tip_z_disp_varname')
-                    plot_dynamic_signal(ax2, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_z_disp_varname, '分枝尖端', '--', 'r', true); % <-- 修改点
+                    plot_dynamic_signal(ax2, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_z_disp_varname, '分枝尖端', '--', 'r', true);
                 end
                 title(ax2, 'Z方向动态位移'); ylabel(ax2, '位移 (m)'); xlabel(ax2, '时间 (s)'); legend(ax2, 'show', 'Location','best');
     
-                % Y-加速度 (显示绝对加速度)
+                % X-加速度 (显示绝对加速度)
                 ax3 = nexttile; hold(ax3, 'on'); grid on;
-                plot_dynamic_signal(ax3, plot_signal_data_map, current_fruit_signal_info_for_plot.y_accel_varname, '果实', '-', 'b', false); % <-- 修改点
-                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_y_accel_varname')
-                    plot_dynamic_signal(ax3, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_y_accel_varname, '分枝尖端', '--', 'r', false); % <-- 修改点
+                plot_dynamic_signal(ax3, plot_signal_data_map, current_fruit_signal_info_for_plot.x_accel_varname, '果实', '-', 'b', false); 
+                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_x_accel_varname')
+                    plot_dynamic_signal(ax3, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_x_accel_varname, '分枝尖端', '--', 'r', false); 
                 end
-                title(ax3, 'Y方向加速度'); ylabel(ax3, '加速度 (m/s^2)'); xlabel(ax3, '时间 (s)'); legend(ax3, 'show', 'Location','best');
+                title(ax3, 'X方向加速度'); ylabel(ax3, '加速度 (m/s^2)'); xlabel(ax3, '时间 (s)'); legend(ax3, 'show', 'Location','best');
     
                 % Z-加速度 (显示绝对加速度)
                 ax4 = nexttile; hold(ax4, 'on'); grid on;
-                plot_dynamic_signal(ax4, plot_signal_data_map, current_fruit_signal_info_for_plot.z_accel_varname, '果实', '-', 'b', false); % <-- 修改点
+                plot_dynamic_signal(ax4, plot_signal_data_map, current_fruit_signal_info_for_plot.z_accel_varname, '果实', '-', 'b', false); 
                 if isfield(current_fruit_signal_info_for_plot, 'parent_tip_z_accel_varname')
-                    plot_dynamic_signal(ax4, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_z_accel_varname, '分枝尖端', '--', 'r', false); % <-- 修改点
+                    plot_dynamic_signal(ax4, plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_z_accel_varname, '分枝尖端', '--', 'r', false); 
                 end
                 title(ax4, 'Z方向加速度'); ylabel(ax4, '加速度 (m/s^2)'); xlabel(ax4, '时间 (s)'); legend(ax4, 'show', 'Location','best');
     
@@ -2353,26 +2353,30 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                 hold(main_ax, 'on');      
     
                 % 提取并绘制分枝尖端轨迹
-                ts_tip_y = []; ts_tip_z = [];
-                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_y_disp_varname') && isKey(plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_y_disp_varname), ts_tip_y = plot_signal_data_map(current_fruit_signal_info_for_plot.parent_tip_y_disp_varname); end
-                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_z_disp_varname') && isKey(plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_z_disp_varname), ts_tip_z = plot_signal_data_map(current_fruit_signal_info_for_plot.parent_tip_z_disp_varname); end
-                if isa(ts_tip_y, 'timeseries') && isa(ts_tip_z, 'timeseries') && length(ts_tip_y.Data) == length(ts_tip_z.Data)
-                     plot(ts_tip_z.Data, ts_tip_y.Data, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.5, 'DisplayName', '分枝尖端轨迹');
+                ts_tip_x = []; ts_tip_z = [];
+                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_x_disp_varname') && isKey(plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_x_disp_varname)
+                    ts_tip_x = plot_signal_data_map(current_fruit_signal_info_for_plot.parent_tip_x_disp_varname);
+                end
+                if isfield(current_fruit_signal_info_for_plot, 'parent_tip_z_disp_varname') && isKey(plot_signal_data_map, current_fruit_signal_info_for_plot.parent_tip_z_disp_varname)
+                    ts_tip_z = plot_signal_data_map(current_fruit_signal_info_for_plot.parent_tip_z_disp_varname); 
+                end
+                if isa(ts_tip_x, 'timeseries') && isa(ts_tip_z, 'timeseries') && length(ts_tip_x.Data) == length(ts_tip_z.Data)
+                     plot(ts_tip_z.Data, ts_tip_x.Data, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.5, 'DisplayName', '分枝尖端轨迹');
                 end
                 
                 % 提取并绘制果实轨迹
-                ts_fruit_y = []; ts_fruit_z = [];
-                if isKey(plot_signal_data_map, current_fruit_signal_info_for_plot.y_disp_varname)
-                    ts_fruit_y = plot_signal_data_map(current_fruit_signal_info_for_plot.y_disp_varname);
+                ts_fruit_x = []; ts_fruit_z = [];
+                if isKey(plot_signal_data_map, current_fruit_signal_info_for_plot.x_disp_varname)
+                    ts_fruit_x = plot_signal_data_map(current_fruit_signal_info_for_plot.x_disp_varname);
                 end
                 if isKey(plot_signal_data_map, current_fruit_signal_info_for_plot.z_disp_varname)
                     ts_fruit_z = plot_signal_data_map(current_fruit_signal_info_for_plot.z_disp_varname);
                 end
     
-                if isa(ts_fruit_y, 'timeseries') && isa(ts_fruit_z, 'timeseries') && length(ts_fruit_y.Time) == length(ts_fruit_y.Data) && length(ts_fruit_y.Data) == length(ts_fruit_z.Data)
-                    x_data = ts_fruit_z.Data(:)'; y_data = ts_fruit_y.Data(:)';
-                    z_data = zeros(size(x_data)); color_data = ts_fruit_y.Time(:)';
-                    % --- 新增：为彩色轨迹线创建代理图例条目 ---
+                if isa(ts_fruit_x, 'timeseries') && isa(ts_fruit_z, 'timeseries') && length(ts_fruit_x.Time) == length(ts_fruit_x.Data) && length(ts_fruit_x.Data) == length(ts_fruit_z.Data)
+                    x_data = ts_fruit_z.Data(:)'; y_data = ts_fruit_x.Data(:)';
+                    z_data = zeros(size(x_data)); color_data = ts_fruit_x.Time(:)';
+                    % 轨迹线创建代理图例条目 ---
                     % surface对象本身不支持DisplayName，所以我们画一个看不见的plot对象来生成图例
                     plot(NaN, NaN, '-k', 'LineWidth', 2, 'DisplayName', '果实轨迹');
     
@@ -2385,15 +2389,12 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                     plot(x_data(end), y_data(end), 'ks', 'MarkerFaceColor', 'k', 'MarkerSize', 8, 'DisplayName', '终点');
                     
                     if is_detached && isfinite(detachment_time)
-                        [~, detach_idx] = min(abs(ts_fruit_y.Time - detachment_time));
+                        [~, detach_idx] = min(abs(ts_fruit_x.Time - detachment_time));
                         if ~isempty(detach_idx)
                             plot(x_data(detach_idx), y_data(detach_idx), 'r*', 'MarkerSize', 12, 'LineWidth', 2, 'DisplayName', '脱落点');
                         end
-                        
-                        % =========================================================================
-                        % ======================== 全新的标记代码 ============================
-                        %
-                        % --- 新增：直接在Colorbar的时间轴上添加脱落时间刻度 ---
+                       
+                        % --- 直接在Colorbar的时间轴上添加脱落时间刻度 ---
                         
                         % 1. 获取Colorbar当前的刻度和标签
                         original_ticks = cb.Ticks;
@@ -2420,17 +2421,16 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
                         cb.Ticks = unique_ticks;
                         cb.TickLabels = unique_tick_labels;
                         
-                        % (可选) 调整标签旋转角度以防重叠
+                        % 调整标签旋转角度以防重叠
                         cb.TickLabelInterpreter = 'tex'; % 确保可以正常显示
                         % cb.TickLabelRotation = 45; % 如果标签太密集，可以取消注释此行
                         %
-                        % =========================================================================
                     end
                 end
                 
                 hold(main_ax, 'off');
                 title(sprintf('果实 %s 及分枝尖端的二维运动轨迹', fruit_id_for_plot_title), 'Interpreter', 'tex');
-                xlabel('Z-位移 (m)'); ylabel('Y-位移 (m)');
+                xlabel('Z-位移 (m)'); ylabel('X-位移 (m)');
                 axis equal; grid on; legend('show', 'Location', 'best');
                 
                 drawnow;            
@@ -2475,9 +2475,6 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
     disp('--- 脚本主要流程执行完毕 ---');
     
     %% === START OF AUXILIARY FUNCTION DEFINITIONS ===
-    % #########################################################################
-    % ####### 所有辅助函数定义从脚本的这个标记之后开始，直到文件末尾 ###########
-    % #########################################################################
     % 这些函数被主脚本调用，以执行特定的、可复用的任务，如清理子系统、创建质量块、连接元素等。
     disp(newline);
     %% clean_subsystem_internals
@@ -2553,7 +2550,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         % fprintf('  辅助函数 clean_subsystem_internals: 子系统 "%s" 清理完成。\n', subsystem_path);
     end % 结束函数 clean_subsystem_internals
     
-    %% create_mass_subsystem_2D (完整确认版)
+    %% create_mass_subsystem_2D
     % 功能: 在指定的父路径下创建一个代表二维点质量的Simulink子系统。
     %       包含牛顿第二定律积分逻辑 (F=ma -> a -> v -> p)。
     %       支持外部连接力、激励力输入，并支持设置位移积分器的初始条件。

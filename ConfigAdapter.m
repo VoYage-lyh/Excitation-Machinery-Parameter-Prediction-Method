@@ -143,49 +143,31 @@ function trunk = buildTrunkParams(preConfig, identifiedParams)
     trunk.tip.m = m_total * m_dist(3);
     
     % 2. 准备源数据 (Source Data Preparation)
-    % 这一步将源数据的“非对称性”抹平，后续逻辑即可对称处理
+    % [纯净版] 只读取规范化的字段: linear, nonlinear_x, nonlinear_z
     
-    src_data_x = [];
-    src_data_z = [];
+    src_linear = [];
     src_nonlin_x = [];
     src_nonlin_z = [];
     
-    % 获取 Trunk 分枝专用数据
+    % A. 优先尝试获取 Trunk 分枝专用数据
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, 'Trunk')
         b_data = identifiedParams.branches.Trunk;
         
-        % 读取线性 X (优先找 linear_x, 兼容旧版 linear)
-        if isfield(b_data, 'linear_x'), src_data_x = b_data.linear_x;
-        elseif isfield(b_data, 'linear'), src_data_x = b_data.linear; end
-        
-        % 读取线性 Z
-        if isfield(b_data, 'linear_z'), src_data_z = b_data.linear_z; end
-        
-        % 读取非线性 X
-        if isfield(b_data, 'nonlinear_x'), src_nonlin_x = b_data.nonlinear_x;
-        elseif isfield(b_data, 'nonlinear'), src_nonlin_x = b_data.nonlinear; end
-        
-        % 读取非线性 Z
+        if isfield(b_data, 'linear'), src_linear = b_data.linear; end
+        if isfield(b_data, 'nonlinear_x'), src_nonlin_x = b_data.nonlinear_x; end
         if isfield(b_data, 'nonlinear_z'), src_nonlin_z = b_data.nonlinear_z; end
-    
     else
-        % 回退到全局数据
-        if isfield(identifiedParams, 'linear_x'), src_data_x = identifiedParams.linear_x;
-        elseif isfield(identifiedParams, 'linear'), src_data_x = identifiedParams.linear; end
-        
-        if isfield(identifiedParams, 'linear_z'), src_data_z = identifiedParams.linear_z; end
-        
-        if isfield(identifiedParams, 'nonlinear_x'), src_nonlin_x = identifiedParams.nonlinear_x;
-        elseif isfield(identifiedParams, 'nonlinear'), src_nonlin_x = identifiedParams.nonlinear; end
-        
+        % B. 回退到全局数据
+        if isfield(identifiedParams, 'linear'), src_linear = identifiedParams.linear; end
+        if isfield(identifiedParams, 'nonlinear_x'), src_nonlin_x = identifiedParams.nonlinear_x; end
         if isfield(identifiedParams, 'nonlinear_z'), src_nonlin_z = identifiedParams.nonlinear_z; end
     end
     
-    if isempty(src_data_x)
-        error('ConfigAdapter:NoTrunkParams', '错误：未在 identifiedParams 中找到主干 X 方向参数。');
+    if isempty(src_linear)
+        error('ConfigAdapter:NoLinearParams', '错误：未在 identifiedParams 中找到线性参数结构体 (linear)。');
     end
 
-    % 3. 初始化所有参数为 0 (安全默认值)
+    % 3. 初始化所有参数为 0
     segments = {'root', 'mid', 'tip'};
     directions = {'x', 'z'};
     params = {'k', 'c', 'k3', 'c2'};
@@ -194,25 +176,22 @@ function trunk = buildTrunkParams(preConfig, identifiedParams)
         seg = segments{s};
         for d = 1:length(directions)
             dir = directions{d};
-            % 连接到基座(root) 或 连接到上一级(mid/tip)
             suffix = '_conn';
             if strcmp(seg, 'root'), suffix = '_conn_to_base'; end
-            
             for p = 1:length(params)
-                par = params{p};
-                trunk.(seg).([par '_' dir suffix]) = 0;
+                trunk.(seg).([params{p} '_' dir suffix]) = 0;
             end
         end
     end
 
-    % 4. 映射: 传感器 X -> 仿真模型 Y (Coordinate Mapping: Sensor X => Model Y)
-    if ~isempty(src_data_x) && isfield(src_data_x, 'identified_params_x')
-        p_vec = src_data_x.identified_params_x;
+    % 4. 映射: X 方向 (从 src_linear 中读取 X 参数)
+    if isfield(src_linear, 'identified_params_x')
+        p_vec = src_linear.identified_params_x;
         trunk.root.k_x_conn_to_base = p_vec(1); trunk.root.c_x_conn_to_base = p_vec(2);
         trunk.root.k_x_conn = p_vec(3);         trunk.root.c_x_conn = p_vec(4);
         trunk.mid.k_x_conn  = p_vec(5);         trunk.mid.c_x_conn  = p_vec(6);
     else
-        error('ConfigAdapter:MissingXData', '主干参数缺少 X 方向数据 (identified_params_x)。');
+        error('ConfigAdapter:MissingXData', '线性参数中缺少 X 方向数据 (identified_params_x)。');
     end
     
     if ~isempty(src_nonlin_x) && isfield(src_nonlin_x, 'k3_coeffs')
@@ -220,17 +199,16 @@ function trunk = buildTrunkParams(preConfig, identifiedParams)
         if length(k3)>=1, trunk.root.k3_x_conn_to_base = k3(1); trunk.root.c2_x_conn_to_base = c2(1); end
         if length(k3)>=2, trunk.root.k3_x_conn = k3(2);         trunk.root.c2_x_conn = c2(2); end
         if length(k3)>=3, trunk.mid.k3_x_conn  = k3(3);         trunk.mid.c2_x_conn  = c2(3); end
-        fprintf('    [ConfigAdapter] 主干 X 数据 -> X 模型参数 (非线性) 已应用。\n');
     end
 
-    % 5. 映射: 传感器 Z -> 仿真模型 Z (Direct Mapping)
-    if ~isempty(src_data_z) && isfield(src_data_z, 'identified_params_z')
-        p_vec = src_data_z.identified_params_z;
+    % 5. 映射: Z 方向 (从 src_linear 中读取 Z 参数)
+    if isfield(src_linear, 'identified_params_z')
+        p_vec = src_linear.identified_params_z;
         trunk.root.k_z_conn_to_base = p_vec(1); trunk.root.c_z_conn_to_base = p_vec(2);
         trunk.root.k_z_conn = p_vec(3);         trunk.root.c_z_conn = p_vec(4);
         trunk.mid.k_z_conn  = p_vec(5);         trunk.mid.c_z_conn  = p_vec(6);
     else
-        error('ConfigAdapter:NoZParams', '严重错误：主干缺少 Z 方向识别参数 (identified_params_z)。');
+        error('ConfigAdapter:NoZParams', '线性参数中缺少 Z 方向数据 (identified_params_z)。');
     end
 
     if ~isempty(src_nonlin_z) && isfield(src_nonlin_z, 'k3_coeffs')
@@ -238,9 +216,6 @@ function trunk = buildTrunkParams(preConfig, identifiedParams)
         if length(k3)>=1, trunk.root.k3_z_conn_to_base = k3(1); trunk.root.c2_z_conn_to_base = c2(1); end
         if length(k3)>=2, trunk.root.k3_z_conn = k3(2);         trunk.root.c2_z_conn = c2(2); end
         if length(k3)>=3, trunk.mid.k3_z_conn  = k3(3);         trunk.mid.c2_z_conn  = c2(3); end
-        fprintf('    [ConfigAdapter] 主干 Z 数据 -> Z 模型参数 (非线性) 已应用。\n');
-    else
-        fprintf('    [ConfigAdapter] 主干 Z 非线性参数未找到 (linear default)。\n');
     end
 end
 
@@ -385,100 +360,72 @@ end
 %% ==================== 辅助函数: 提取基准值和分布 ====================
 function [k_base, c_base, k3_base, c2_base, branch_taper, z_params] = estimateStiffnessDamping(branchGeom, identifiedParams, branchName)
     
-    % 1. 准备本地数据容器 (X/Z 独立)
-    src_lin_x = []; src_nonlin_x = [];
-    src_lin_z = []; src_nonlin_z = [];
+    % 1. 准备数据容器
+    src_linear = []; 
+    src_nonlin_x = []; 
+    src_nonlin_z = [];
     
-    % 2. 尝试从分枝专用数据读取 (Branch Specific)
+    % 2. 尝试从分枝专用数据读取
     if isfield(identifiedParams, 'branches') && isfield(identifiedParams.branches, branchName)
         branch_data = identifiedParams.branches.(branchName);
-        
-        % 读取 X (支持 linear_x 和旧版 linear)
-        if isfield(branch_data, 'linear_x'), src_lin_x = branch_data.linear_x;
-        elseif isfield(branch_data, 'linear'), src_lin_x = branch_data.linear; end
-        
-        % 读取 Z
-        if isfield(branch_data, 'linear_z'), src_lin_z = branch_data.linear_z; end
-        
-        % 读取非线性 X
-        if isfield(branch_data, 'nonlinear_x'), src_nonlin_x = branch_data.nonlinear_x;
-        elseif isfield(branch_data, 'nonlinear'), src_nonlin_x = branch_data.nonlinear; end
-        
-        % 读取非线性 Z
+        if isfield(branch_data, 'linear'), src_linear = branch_data.linear; end
+        if isfield(branch_data, 'nonlinear_x'), src_nonlin_x = branch_data.nonlinear_x; end
         if isfield(branch_data, 'nonlinear_z'), src_nonlin_z = branch_data.nonlinear_z; end
     end
     
-    % 3. 尝试从全局数据读取 (Global Fallback)
-    glob_lin_x = []; glob_nonlin_x = [];
-    glob_lin_z = []; glob_nonlin_z = [];
-    
-    % 全局 X 读取
-    if isfield(identifiedParams, 'linear_x'), glob_lin_x = identifiedParams.linear_x;
-    elseif isfield(identifiedParams, 'linear'), glob_lin_x = identifiedParams.linear; end
-    
-    % 全局 Z 读取
-    if isfield(identifiedParams, 'linear_z'), glob_lin_z = identifiedParams.linear_z; end
-    
-    % 兼容旧结构: Z 可能藏在 linear 中
-    if isempty(glob_lin_z) && isfield(identifiedParams, 'linear') && isfield(identifiedParams.linear, 'identified_params_z')
-         glob_lin_z = identifiedParams.linear;
+    % 3. 全局回退 (若分枝无专用数据)
+    if isempty(src_linear) && isfield(identifiedParams, 'linear')
+        src_linear = identifiedParams.linear;
+    end
+    if isempty(src_nonlin_x) && isfield(identifiedParams, 'nonlinear_x')
+        src_nonlin_x = identifiedParams.nonlinear_x;
+    end
+    if isempty(src_nonlin_z) && isfield(identifiedParams, 'nonlinear_z')
+        src_nonlin_z = identifiedParams.nonlinear_z;
     end
     
-    % 全局非线性
-    if isfield(identifiedParams, 'nonlinear_x'), glob_nonlin_x = identifiedParams.nonlinear_x;
-    elseif isfield(identifiedParams, 'nonlinear'), glob_nonlin_x = identifiedParams.nonlinear; end
-    
-    if isfield(identifiedParams, 'nonlinear_z'), glob_nonlin_z = identifiedParams.nonlinear_z; end
-    
-    % 4. 融合数据
-    final_lin_x    = src_lin_x;    if isempty(final_lin_x),    final_lin_x = glob_lin_x;       end
-    final_lin_z    = src_lin_z;    if isempty(final_lin_z),    final_lin_z = glob_lin_z;       end
-    final_nonlin_x = src_nonlin_x; if isempty(final_nonlin_x), final_nonlin_x = glob_nonlin_x; end
-    final_nonlin_z = src_nonlin_z; if isempty(final_nonlin_z), final_nonlin_z = glob_nonlin_z; end
-    
-    % 5. 提取 X 参数 -> 映射为模型的 Y 参数 (Coordinate Mapping: Sensor X => Model Y)
-    if isempty(final_lin_x)
-        error('ConfigAdapter:MissingXData', '分枝 "%s" 缺少 X 方向线性数据。', branchName);
+    if isempty(src_linear)
+        error('ConfigAdapter:MissingLinearData', '分枝 "%s" 缺少线性参数源 (linear)。', branchName);
     end
     
-    % 处理 K_x / C_x
-    if isfield(final_lin_x, 'K_x'), K_mat = final_lin_x.K_x; C_mat = final_lin_x.C_x;
-    elseif isfield(final_lin_x, 'K'), K_mat = final_lin_x.K; C_mat = final_lin_x.C; 
-    else
-        % 向量格式回退
-        vec = final_lin_x.identified_params_x;
+    % 4. 提取 X 参数 (从 src_linear 中)
+    if isfield(src_linear, 'K_x')
+        K_mat = src_linear.K_x; C_mat = src_linear.C_x;
+    elseif isfield(src_linear, 'K')
+        K_mat = src_linear.K; C_mat = src_linear.C;
+    elseif isfield(src_linear, 'identified_params_x')
+        vec = src_linear.identified_params_x;
         k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
         c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
         K_mat = diag(k_d); C_mat = diag(c_d);
+    else
+        error('ConfigAdapter:MissingXData', '线性参数中缺少 X 方向矩阵数据 (K_x/identified_params_x)。');
     end
     
     K_vals = diag(K_mat); C_vals = diag(C_mat);
     k_base = max(K_vals); k_taper = K_vals / k_base; 
     c_base = max(C_vals); c_taper = C_vals / c_base;
-    [k3_base, c2_base, k3_taper, c2_taper] = extractNonlinearBaseTaper(final_nonlin_x);
+    [k3_base, c2_base, k3_taper, c2_taper] = extractNonlinearBaseTaper(src_nonlin_x);
     
-    % 6. 提取 Z 参数 -> 映射为模型的 Z 参数
-    if isempty(final_lin_z)
-        warning('ConfigAdapter:MissingZData', '分枝 "%s" 缺少 Z 方向线性数据，尝试使用 X 参数作为近似。', branchName);
-        % 这里的回退是为了保证代码不报错，但在您的场景中应尽量避免
-        final_lin_z = final_lin_x; 
-        K_mat_z = K_mat; C_mat_z = C_mat;
+    % 5. 提取 Z 参数 (从 src_linear 中)
+    if isfield(src_linear, 'K_z')
+        K_mat_z = src_linear.K_z; C_mat_z = src_linear.C_z;
+    elseif isfield(src_linear, 'identified_params_z')
+         vec = src_linear.identified_params_z;
+         k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
+         c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
+         K_mat_z = diag(k_d); C_mat_z = diag(c_d);
     else
-        if isfield(final_lin_z, 'K_z'), K_mat_z = final_lin_z.K_z; C_mat_z = final_lin_z.C_z;
-        elseif isfield(final_lin_z, 'K'), K_mat_z = final_lin_z.K; C_mat_z = final_lin_z.C;
-        else
-             vec = final_lin_z.identified_params_z;
-             k_d = [vec(1)+vec(3), vec(3)+vec(5), vec(5)];
-             c_d = [vec(2)+vec(4), vec(4)+vec(6), vec(6)];
-             K_mat_z = diag(k_d); C_mat_z = diag(c_d);
-        end
+        % 如果实在没有Z，且必须回退到X (非推荐，但在数据缺失时保护程序)
+        warning('ConfigAdapter:MissingZData', '分枝 "%s" 缺少 Z 方向数据，临时复用 X 参数。', branchName);
+        K_mat_z = K_mat; C_mat_z = C_mat;
     end
     
     z_params = struct();
     K_vals_z = diag(K_mat_z); C_vals_z = diag(C_mat_z);
     z_params.k_base = max(K_vals_z); z_params.c_base = max(C_vals_z);
     z_params.k_taper = K_vals_z / z_params.k_base; z_params.c_taper = C_vals_z / z_params.c_base;
-    [z_params.k3_base, z_params.c2_base, z_params.k3_taper, z_params.c2_taper] = extractNonlinearBaseTaper(final_nonlin_z);
+    [z_params.k3_base, z_params.c2_base, z_params.k3_taper, z_params.c2_taper] = extractNonlinearBaseTaper(src_nonlin_z);
     
     branch_taper = struct('k', k_taper, 'c', c_taper, 'k3', k3_taper, 'c2', c2_taper);
 end

@@ -1196,44 +1196,34 @@ function identified_params = runIdentificationManual(accel_data_cell, force_data
     identified_params.test_config = test_config;
     identified_params.segments = segments;
     
-    % 阶段一: 线性参数 (X方向/通用容器)
-    identified_params.linear_x = linear_params;
+    % 构建统一参数结构体
+    identified_params = struct();
+    identified_params.fs = fs;
+    identified_params.test_config = test_config;
+    identified_params.segments = segments;
     
-    % 显式构建 Z 方向线性参数结构体 (linear_z)
-    % 确保 X 和 Z 在数据结构上完全独立且对称
-    identified_params.linear_z = struct();
-    if isfield(linear_params, 'identified_params_z')
-        identified_params.linear_z.identified_params_z = linear_params.identified_params_z;
-        identified_params.linear_z.K_z = linear_params.K_z;
-        identified_params.linear_z.C_z = linear_params.C_z;
-        identified_params.linear_z.natural_freqs = linear_params.natural_freqs_z;
-        identified_params.linear_z.damping_ratios = linear_params.damping_ratios_z;
-        
-        % 如果有FRF数据，也一并转存
-        if isfield(linear_params, 'FRF_matrix_z')
-            identified_params.linear_z.FRF_matrix = linear_params.FRF_matrix_z;
-            identified_params.linear_z.coherence_matrix = linear_params.coherence_matrix_z;
-        end
-    end
+    % 1. 线性参数 (直接存储 Stage 1 的完整输出)
+    % linear_params 内部已包含 K_x, K_z, M_global, K_global 等
+    identified_params.linear = linear_params;
     
-    % 阶段二: 非线性检测结果
+    % 2. 非线性检测结果
     identified_params.nl_detection = nl_detection;
     
-    % 阶段三: 非线性参数
-    identified_params.nonlinear_x = nonlinear_params_x;     % X方向存入 .nonlinear (保持兼容)
-    identified_params.nonlinear_z = nonlinear_params_z;   % Z方向存入 .nonlinear_z 
+    % 3. 非线性参数 (X/Z 严格分离，拒绝兼容混淆)
+    identified_params.nonlinear_x = nonlinear_params_x;
+    identified_params.nonlinear_z = nonlinear_params_z;
     
-    % 阶段四: 脱落力模型
+    % 4. 脱落力模型
     identified_params.detachment_model = detachment_model;
     
-    % 构建全局质量、刚度、阻尼矩阵
+    % 5. 构建全局矩阵 (适应新结构)
     identified_params = buildGlobalMatrices(identified_params);
     
-    % 交叉验证
+    % 6. 交叉验证
     validation = validateParameters(identified_params, segments);
     identified_params.validation = validation;
     
-    % 生成统一参数接口
+    % 7. 生成统一接口
     identified_params.unified_interface = createUnifiedParameterInterface(identified_params);
     
     fprintf('\n');
@@ -4832,9 +4822,9 @@ function M_eq = defineEquivalentMassMatrix()
     % "将每根分枝离散为三个集中质量节点: Root, Mid, Tip"
     
     % 质量分布 (基于实测数据)
-    m_root = 0.025;  % 根节点质量 (kg)
-    m_mid = 0.020;   % 中节点质量 (kg)
-    m_tip = 0.015;   % 末端节点质量 (kg)
+    m_root = 1.5;  % 根节点质量 (kg)
+    m_mid = 1.5;   % 中节点质量 (kg)
+    m_tip = 1.5;   % 末端节点质量 (kg)
     
     M_eq = diag([m_root, m_mid, m_tip]);
 end
@@ -5386,83 +5376,120 @@ end
 
 
 % 谐波平衡法优化
+% =========================================================================
+% 1. 增加加速度(g)到位移(m)的单位转换
+% 2. 基于数据的 k3 智能初始化，替代硬编码
+% =========================================================================
 function [k3_opt, c2_opt, fit_quality] = harmonicBalanceOptimization(...
-    amplitudes, frequencies, k_lin, c_lin, m_eq, omega0)
-    % 谐波平衡法参数优化
-    %
-    % 根据V3手稿公式:
-    % 幅频特性: ((k_lin - m*ω² + (3/4)*k3*A²)² + (c_lin*ω + Γ_damping)²) * A² = F0²
+    amplitudes_g, frequencies, k_lin, c_lin, m_eq, omega0)
     
-    % 将频率转换为角频率
+    % 1. [单位转换] 将加速度幅值(g)转换为位移幅值(m)
+    % A_disp = (A_g * 9.80665) / omega^2
+    % 注意：这里使用测量的频率进行转换是近似的，但在共振点附近是合理的
     omega_exp = 2 * pi * frequencies;
-    A_exp = amplitudes;
+    A_disp = (amplitudes_g * 9.80665) ./ (omega_exp.^2);
     
-    % 优化目标: 最小化理论频率与实验频率的偏差
-    % 使用简化的骨架曲线方程: ω ≈ ω0 * sqrt(1 + (3/4) * k3 * A² / k_lin)
-    
-    % 初始猜测
-    % 从频率偏移估计k3符号和量级
-    freq_shift = (frequencies - omega0/(2*pi)) / (omega0/(2*pi));
-    mean_shift = mean(freq_shift);
-    
-    if mean_shift > 0
-        k3_init = k_lin * 1e4;  % 硬化型
-    else
-        k3_init = -k_lin * 1e4;  % 软化型
+    % 调试输出，确认数量级
+    if length(A_disp) > 0
+        fprintf('        [数据检查] 加速度幅值: %.2f g -> 位移幅值: %.2f mm\n', ...
+            mean(amplitudes_g), mean(A_disp)*1000);
     end
-    c2_init = c_lin * 10;
+
+    % 2. [智能初始化] 根据 Duffing 频率公式反推 k3 初值
+    % 公式: (w/w0)^2 = 1 + 0.75 * (k3/k_lin) * A^2
+    % => k3 = ( (w/w0)^2 - 1 ) * k_lin / (0.75 * A^2)
+    
+    valid_pts = 0;
+    k3_est_sum = 0;
+    
+    for i = 1:length(frequencies)
+        w_ratio_sq = (omega_exp(i) / omega0)^2;
+        if abs(w_ratio_sq - 1) > 0.01 % 只使用频率偏移明显的数据点
+            k3_val = (w_ratio_sq - 1) * k_lin / (0.75 * A_disp(i)^2);
+            k3_est_sum = k3_est_sum + k3_val;
+            valid_pts = valid_pts + 1;
+        end
+    end
+    
+    if valid_pts > 0
+        k3_init = k3_est_sum / valid_pts;
+    else
+        % 如果没有明显频率偏移，默认为0 (线性)
+        k3_init = 0;
+    end
+    
+    % 阻尼初值
+    c2_init = 0; % 从0开始
     
     x0 = [k3_init, c2_init];
     
-    % 边界
-    lb = [-abs(k3_init)*10, 0];
-    ub = [abs(k3_init)*10, c2_init*100];
+    fprintf('        [初始化] k3_init = %.2e, k_lin = %.2e\n', k3_init, k_lin);
     
-    % 目标函数
-    objective = @(x) computeHBMObjective(x, A_exp, omega_exp, k_lin, c_lin, m_eq, omega0);
+    % 3. 设置合理的边界
+    % k3 的范围放宽，但防止天文数字
+    % 注意：如果 k3_init 是负数，lb 应该是更小的负数
+    if k3_init < 0
+        lb = [k3_init * 10, -100]; % 软化
+        ub = [abs(k3_init), 100];   % 允许稍微变正，用于搜索
+    else
+        lb = [-abs(k3_init), -100];
+        ub = [max(1e4, k3_init * 10), 100];
+    end
+    
+    % 4. 目标函数 (传入位移 A_disp)
+    objective = @(x) computeHBMObjective(x, A_disp, omega_exp, k_lin, c_lin, m_eq, omega0);
     
     % 优化选项
     options = optimoptions('fmincon', 'Display', 'off', ...
-        'MaxIterations', 100, 'OptimalityTolerance', 1e-6);
+        'MaxIterations', 200, 'OptimalityTolerance', 1e-8, 'StepTolerance', 1e-8);
     
     try
         [x_opt, fval] = fmincon(objective, x0, [], [], [], [], lb, ub, [], options);
         k3_opt = x_opt(1);
         c2_opt = x_opt(2);
-        fit_quality = 1 / (1 + fval);  % 归一化拟合质量
-    catch
+        
+        % 归一化拟合质量 (0-1)
+        fit_quality = max(0, 1 - fval); 
+    catch ME
+        fprintf('        [优化失败] %s\n', ME.message);
         k3_opt = k3_init;
         c2_opt = c2_init;
         fit_quality = 0;
     end
 end
 
-
-function error = computeHBMObjective(x, A_exp, omega_exp, k_lin, c_lin, m_eq, omega0)
-    % 谐波平衡法目标函数
+% =========================================================================
+% 1. 增加 sqrt 内的非负保护 (max(0, ...))
+% 2. 修正频率预测逻辑，避免软化过度导致的计算错误
+% =========================================================================
+function error = computeHBMObjective(x, A_disp, omega_exp_meas, k_lin, c_lin, m_eq, omega0)
     
     k3 = x(1);
-    c2 = x(2);
+    c2 = x(2); % 暂时保留，虽然主要影响幅值而非频率，但在HBM完整方程中会耦合
     
-    n = length(A_exp);
+    n = length(A_disp);
     error = 0;
     
     for i = 1:n
-        A = A_exp(i);
-        omega_meas = omega_exp(i);
+        A = A_disp(i); % 此时 A 已经是位移(m)
+        w_meas = omega_exp_meas(i);
         
-        % 理论预测频率 (简化骨架曲线)
-        % ω_pred = ω0 * sqrt(1 + (3/4) * k3 * A² / k_lin)
-        ratio = 1 + (3/4) * k3 * A^2 / k_lin;
+        % 理论预测频率 (骨架曲线公式)
+        % w_pred^2 = w0^2 * (1 + 0.75 * k3/k_lin * A^2)
+        term = 1 + (0.75 * k3 * A^2) / k_lin;
         
-        if ratio > 0
-            omega_pred = omega0 * sqrt(ratio);
+        % [保护] 防止软化过度导致根号内为负
+        % 如果 term < 0，说明模型在该振幅下刚度已崩塌，给予巨大惩罚
+        if term > 0
+            w_pred = omega0 * sqrt(term);
+            % 计算相对平方误差
+            err_term = ((w_pred - w_meas) / w_meas)^2;
         else
-            omega_pred = omega0 * 0.5;  % 软化极限
+            % 刚度崩塌惩罚: 距离0越远惩罚越大
+            err_term = 10 + abs(term) * 100; 
         end
         
-        % 频率误差
-        error = error + (omega_pred - omega_meas)^2 / omega0^2;
+        error = error + err_term;
     end
     
     error = error / n;
@@ -5570,28 +5597,43 @@ end
 % 构建全局矩阵
 function params = buildGlobalMatrices(params)
     % 构建用于仿真的全局质量、刚度、阻尼矩阵
-    % 整合线性和非线性参数
+    % 严格按照 [X_dofs, Z_dofs] 的顺序整合
     
-    fprintf('  构建全局系统矩阵...\n');
+    fprintf('  构建全局系统矩阵 (X/Z 规范化版)...\n');
     
-    % 从线性参数获取基础矩阵
-    if isfield(params.linear, 'M')
-        params.M_global = params.linear.M;
-        params.K_global = params.linear.K;
-        params.C_global = params.linear.C;
-    end
-    
-    % 添加非线性参数到适当位置
-    if isfield(params, 'nonlinear') && isfield(params.nonlinear, 'valid') && params.nonlinear.valid
-        if isfield(params.nonlinear, 'k3_coeffs')
-            params.k3_global = params.nonlinear.k3_coeffs;
-        end
-        if isfield(params.nonlinear, 'c2_coeffs')
-            params.c2_global = params.nonlinear.c2_coeffs;
+    % 1. 线性部分 (直接使用 params.linear 中的全局矩阵)
+    if isfield(params, 'linear')
+        if isfield(params.linear, 'M')
+            params.M_global = params.linear.M; % 6x6
+            params.K_global = params.linear.K; % 6x6
+            params.C_global = params.linear.C; % 6x6
         end
     end
     
-    % 标记各节点的非线性状态
+    % 2. 非线性部分 (手动拼接 X 和 Z 的系数)
+    % 结构顺序通常是: [Root_X, Mid_X, Tip_X, Root_Z, Mid_Z, Tip_Z]
+    
+    % 获取 X 方向系数 (默认为0)
+    k3_x = [0, 0, 0];
+    c2_x = [0, 0, 0];
+    if isfield(params, 'nonlinear_x') && isfield(params.nonlinear_x, 'valid') && params.nonlinear_x.valid
+        k3_x = params.nonlinear_x.k3_coeffs;
+        c2_x = params.nonlinear_x.c2_coeffs;
+    end
+    
+    % 获取 Z 方向系数 (默认为0)
+    k3_z = [0, 0, 0];
+    c2_z = [0, 0, 0];
+    if isfield(params, 'nonlinear_z') && isfield(params.nonlinear_z, 'valid') && params.nonlinear_z.valid
+        k3_z = params.nonlinear_z.k3_coeffs;
+        c2_z = params.nonlinear_z.c2_coeffs;
+    end
+    
+    % 拼接到全局向量
+    params.k3_global = [k3_x, k3_z];
+    params.c2_global = [c2_x, c2_z];
+    
+    % 3. 标记非线性节点 (只要任意方向非线性，该节点即视为非线性)
     if isfield(params, 'nl_detection') && isfield(params.nl_detection, 'is_nonlinear')
         params.is_nonlinear_node = params.nl_detection.is_nonlinear;
     end
@@ -5600,67 +5642,57 @@ end
 
 % 创建统一参数接口
 function interface = createUnifiedParameterInterface(params)
-    % 创建统一参数接口
-    % 用于连接分析模块和仿真模块
-    %
-    % 根据V3手稿2.4.1节:
-    % "参数-拓扑映射模块(Parameter-Topology Mapping Module)"
+    % 创建统一参数接口 (X/Z 规范化版)
     
     fprintf('  创建统一参数接口...\n');
     
     interface = struct();
-    
-    % 基本信息
-    interface.version = 'SAD_Framework_v1.0';
+    interface.version = 'SAD_Framework_v2.0_Strict';
     interface.timestamp = datestr(now);
     interface.fs = params.fs;
     
-    % 系统维度
-    interface.n_nodes = 3;  % Root, Mid, Tip
-    interface.n_dof = 6;    % 3节点 x 2方向
+    interface.n_nodes = 3;
+    interface.n_dof = 6;
     
-    % 线性参数
+    % 1. 线性参数
     interface.linear = struct();
     interface.linear.M = params.linear.M;
     interface.linear.K = params.linear.K;
     interface.linear.C = params.linear.C;
-    if isfield(params.linear, 'natural_freqs_x') && isfield(params.linear, 'natural_freqs_z')
-        interface.linear.natural_freqs = [params.linear.natural_freqs_x, params.linear.natural_freqs_z];
-    else
-        interface.linear.natural_freqs = [];
-    end
-
-    if isfield(params.linear, 'damping_ratios_x') && isfield(params.linear, 'damping_ratios_z')
-        interface.linear.damping_ratios = [params.linear.damping_ratios_x, params.linear.damping_ratios_z];
-    else
-        interface.linear.damping_ratios = [];
-    end
+    % 将频率和阻尼比也规范化拼接
+    interface.linear.natural_freqs = [params.linear.natural_freqs_x, params.linear.natural_freqs_z];
+    interface.linear.damping_ratios = [params.linear.damping_ratios_x, params.linear.damping_ratios_z];
     
-    % 非线性参数 (按节点索引)
+    % 2. 非线性参数 (结构化存储)
     interface.nonlinear = struct();
     interface.nonlinear.is_active = params.nl_detection.is_nonlinear;
-    interface.nonlinear.NL_index = params.nl_detection.NL_index;
-    interface.nonlinear.NL_threshold = params.nl_detection.NL_threshold;
-    interface.nonlinear.k3 = params.nonlinear.k3_coeffs;
-    interface.nonlinear.c2 = params.nonlinear.c2_coeffs;
-    interface.nonlinear.type = params.nonlinear.nonlinear_type;
     
-    % 脱落力模型
+    % X 方向非线性
+    interface.nonlinear.x = struct();
+    if isfield(params, 'nonlinear_x')
+        interface.nonlinear.x = params.nonlinear_x;
+    end
+    
+    % Z 方向非线性
+    interface.nonlinear.z = struct();
+    if isfield(params, 'nonlinear_z')
+        interface.nonlinear.z = params.nonlinear_z;
+    end
+    
+    % 全局扁平化系数 (方便仿真调用)
+    interface.nonlinear.k3_global = params.k3_global;
+    interface.nonlinear.c2_global = params.c2_global;
+    
+    % 3. 其他
     interface.detachment = params.detachment_model;
-    
-    % 节点标签
     interface.node_labels = {'Root', 'Mid', 'Tip'};
-    interface.direction_labels = {'Y', 'Z'};
+    interface.direction_labels = {'X', 'Z'};
     
-    % 获取单节点参数的函数
+    % 4. 节点参数获取函数 (更新为支持新结构)
     interface.getNodeParams = @(node_idx) getNodeParameters(params, node_idx);
-    
-    % 判断节点是否需要非线性处理的函数
-    interface.isNonlinear = @(node_idx) params.nl_detection.is_nonlinear(node_idx);
     
     fprintf('  [√] 统一参数接口已创建\n');
 end
-
 
 function node_params = getNodeParameters(params, node_idx)
     % 获取单个节点的完整参数
@@ -5669,39 +5701,39 @@ function node_params = getNodeParameters(params, node_idx)
     node_params.index = node_idx;
     labels = {'Root', 'Mid', 'Tip'};
     node_params.label = labels{node_idx};
-
     
-    % 质量
+    % 质量 (从全局M矩阵对角线获取，假设X/Z质量相同)
     M = params.linear.M;
     node_params.mass = M(node_idx, node_idx);
     
-    % 线性刚度和阻尼
-    K = params.linear.K;
-    C = params.linear.C;
-    node_params.k_linear = K(node_idx, node_idx);
-    node_params.c_linear = C(node_idx, node_idx);
+    % 线性参数 (区分 X 和 Z)
+    % 注意：params.linear.K_x 是 3x3 矩阵
+    node_params.kx = params.linear.K_x(node_idx, node_idx);
+    node_params.cx = params.linear.C_x(node_idx, node_idx);
+    
+    node_params.kz = params.linear.K_z(node_idx, node_idx);
+    node_params.cz = params.linear.C_z(node_idx, node_idx);
     
     % 非线性参数
     node_params.is_nonlinear = params.nl_detection.is_nonlinear(node_idx);
-    node_params.NL_index = params.nl_detection.NL_index(node_idx);
     
-    if node_params.is_nonlinear
-        node_params.k3 = params.nonlinear.k3_coeffs(node_idx);
-        node_params.c2 = params.nonlinear.c2_coeffs(node_idx);
-
-        % 安全获取非线性类型（兼容 cell 和字符串数组）
-        if iscell(params.nonlinear.nonlinear_type)
-            node_params.nl_type = params.nonlinear.nonlinear_type{node_idx};
-        elseif isstring(params.nonlinear.nonlinear_type)
-            node_params.nl_type = params.nonlinear.nonlinear_type(node_idx);
-        else
-            node_params.nl_type = 'unknown';
+    % X 方向非线性
+    node_params.k3_x = 0; node_params.c2_x = 0; node_params.type_x = 'linear';
+    if isfield(params, 'nonlinear_x') && params.nonlinear_x.valid
+        node_params.k3_x = params.nonlinear_x.k3_coeffs(node_idx);
+        node_params.c2_x = params.nonlinear_x.c2_coeffs(node_idx);
+        if iscell(params.nonlinear_x.nonlinear_type)
+            node_params.type_x = params.nonlinear_x.nonlinear_type{node_idx};
         end
-    else
-        node_params.k3 = 0;
-        node_params.c2 = 0;
-        node_params.nl_type = 'linear';
+    end
+    
+    % Z 方向非线性
+    node_params.k3_z = 0; node_params.c2_z = 0; node_params.type_z = 'linear';
+    if isfield(params, 'nonlinear_z') && params.nonlinear_z.valid
+        node_params.k3_z = params.nonlinear_z.k3_coeffs(node_idx);
+        node_params.c2_z = params.nonlinear_z.c2_coeffs(node_idx);
+        if iscell(params.nonlinear_z.nonlinear_type)
+            node_params.type_z = params.nonlinear_z.nonlinear_type{node_idx};
+        end
     end
 end
-
-

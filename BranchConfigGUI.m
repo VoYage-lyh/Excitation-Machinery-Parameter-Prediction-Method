@@ -870,21 +870,21 @@ function onClose(fig, ~)
 end
 
 %% ==================== 参数收集函数 ====================
+%% ==================== 参数收集函数 (修复同步逻辑) ====================
 function config = collectAllParameters(fig)
     try
         config = struct();
         
-        % 基础
+        % --- 基础设置 ---
         config.basic.workFolder = getEditValue(fig, 'edit_workFolder', 'string');
         config.basic.projectName = getEditValue(fig, 'edit_projectName', 'string');
         if isempty(config.basic.projectName), config.basic.projectName = 'Untitled_Tree'; end
         config.basic.gravity_g = getEditValue(fig, 'edit_gravity', 'double');
-        % 显式写入 Simulink 模型名称 (防止丢失)
         config.basic.modelName = 'MDOF_Hierarchical_Vibration_Sim';
         config.basic.useParallel = getCheckValue(fig, 'check_parallel');
         config.basic.parallel_max_workers = round(getEditValue(fig, 'edit_parallel_workers', 'double'));
         
-        % 信号
+        % --- 信号处理 ---
         config.signal.fs_target = getEditValue(fig, 'edit_fs', 'double');
         config.signal.cutoff_freq = getEditValue(fig, 'edit_cutoff', 'double');
         config.signal.filter_order = getEditValue(fig, 'edit_filterOrder', 'double');
@@ -893,7 +893,7 @@ function config = collectAllParameters(fig)
         config.signal.freq_range_max = getEditValue(fig, 'edit_freqMax', 'double');
         config.signal.snr_threshold = getEditValue(fig, 'edit_snrThreshold', 'double');
         
-        % 拓扑 (读取字符串并求值)
+        % --- 拓扑结构 (核心修复点) ---
         topoStr = getEditValue(fig, 'edit_topologyStructure', 'string');
         try
             config.topology.structure = eval(topoStr);
@@ -904,27 +904,25 @@ function config = collectAllParameters(fig)
             error('拓扑结构格式错误，请检查输入 (应为 Cell 数组 {...})');
         end
         
-        % 主干
+        % --- 主干参数 ---
         config.trunk.total_mass = getEditValue(fig, 'edit_trunk_mass', 'double');
         config.trunk.length = getEditValue(fig, 'edit_trunk_length', 'double');
         config.trunk.diameter_base = getEditValue(fig, 'edit_trunk_dBase', 'double');
         config.trunk.diameter_tip = getEditValue(fig, 'edit_trunk_dTip', 'double');
         config.trunk.mass_distribution = eval(getEditValue(fig, 'edit_trunk_massDist', 'string'));
         
-        % 分枝参数 (从表格读取)
+        % --- 分枝参数 (智能同步逻辑) ---
+        % 1. 基于当前的拓扑结构，生成一套完整的默认参数
+        [def_primary, def_secondary, def_tertiary] = generateDefaultBranchParams(config.topology.structure);
+        
+        % 2. 从表格中读取用户已修改的参数
         hTable = findobj(fig, 'Tag', 'table_branches');
+        user_params = struct('primary', struct(), 'secondary', struct(), 'tertiary', struct());
+        
         if ~isempty(hTable)
             tableData = get(hTable, 'Data');
-            
-            % [修复] 初始化分类结构体，与 ConfigAdapter 保持一致
-            config.primary = struct();
-            config.secondary = struct();
-            config.tertiary = struct();
-            
             for i = 1:size(tableData, 1)
                 branchId = tableData{i, 1};
-                
-                % 构建单个分枝参数
                 s_params = struct(...
                     'total_mass', tableData{i, 2}, ...
                     'length', tableData{i, 3}, ...
@@ -932,26 +930,21 @@ function config = collectAllParameters(fig)
                     'diameter_tip', tableData{i, 5}, ...
                     'mass_dist', eval(tableData{i, 6}));
                 
-                % 根据 ID 下划线数量自动归类
-                % P1 -> 0个下划线 -> primary
-                % P1_S1 -> 1个下划线 -> secondary
-                % P1_S1_T1 -> 2个下划线 -> tertiary
+                % 归类
                 u_count = length(strfind(branchId, '_'));
-                
-                if u_count == 0
-                    config.primary.(branchId) = s_params;
-                elseif u_count == 1
-                    config.secondary.(branchId) = s_params;
-                elseif u_count == 2
-                    config.tertiary.(branchId) = s_params;
-                else
-                    % 异常情况，暂存入 primary 或忽略
-                    config.primary.(branchId) = s_params;
+                if u_count == 0, user_params.primary.(branchId) = s_params;
+                elseif u_count == 1, user_params.secondary.(branchId) = s_params;
+                elseif u_count == 2, user_params.tertiary.(branchId) = s_params;
                 end
             end
         end
         
-        % 果实
+        % 3. 合并逻辑：以拓扑结构(def_*)为准，如果用户表中有对应ID，则覆盖默认值
+        config.primary = mergeParams(def_primary, user_params.primary);
+        config.secondary = mergeParams(def_secondary, user_params.secondary);
+        config.tertiary = mergeParams(def_tertiary, user_params.tertiary);
+        
+        % --- 果实参数 ---
         config.fruit.mass = getEditValue(fig, 'edit_fruit_mass', 'double');
         config.fruit.diameter = getEditValue(fig, 'edit_fruit_diameter', 'double');
         config.fruit.pedicel_length = getEditValue(fig, 'edit_fruit_pedicel_length', 'double');
@@ -966,7 +959,7 @@ function config = collectAllParameters(fig)
         config.fruit.attach_tertiary_tip = getCheckValue(fig, 'check_tertiary_tip');
         config.fruit.fruits_per_node = getEditValue(fig, 'edit_fruits_per_node', 'double');
         
-        % 激励
+        % --- 激励参数 ---
         bg = findobj(fig, 'Tag', 'bg_excitationType');
         if ~isempty(bg)
             selectedBtn = get(bg, 'SelectedObject');
@@ -978,10 +971,10 @@ function config = collectAllParameters(fig)
         else
             config.excitation.type = 'impulse';
         end
-        config.excitation.sine_amplitude_x = getEditValue(fig, 'edit_sine_ampx', 'double');
+        config.excitation.sine_amplitude_x = getEditValue(fig, 'edit_sine_ampY', 'double'); % Tag name corrected
         config.excitation.sine_amplitude_z = getEditValue(fig, 'edit_sine_ampZ', 'double');
         config.excitation.frequency_hz = getEditValue(fig, 'edit_sine_freq', 'double');
-        config.excitation.phase_x_rad = getEditValue(fig, 'edit_sine_phasex', 'double');
+        config.excitation.phase_x_rad = getEditValue(fig, 'edit_sine_phaseX', 'double'); % Tag name corrected
         config.excitation.phase_z_rad = getEditValue(fig, 'edit_sine_phaseZ', 'double');
         config.excitation.impulse_gain_x = getEditValue(fig, 'edit_impulse_gainX', 'double');
         config.excitation.impulse_gain_z = getEditValue(fig, 'edit_impulse_gainZ', 'double');
@@ -992,13 +985,27 @@ function config = collectAllParameters(fig)
         config.excitation.start_time = getEditValue(fig, 'edit_excite_start', 'double');
         config.excitation.end_time = getEditValue(fig, 'edit_excite_end', 'double');
         
-        % 仿真
+        % --- 仿真参数 ---
         config.simulation.stop_time = getEditValue(fig, 'edit_sim_stop', 'double');
         config.simulation.fixed_step = getEditValue(fig, 'edit_sim_step', 'double');
         
     catch ME
         errordlg(['收集参数失败: ' ME.message], '错误');
         config = [];
+    end
+end
+
+% 辅助合并函数：确保返回的结构体完全符合拓扑要求
+function final_struct = mergeParams(default_struct, user_struct)
+    final_struct = default_struct;
+    fields = fieldnames(default_struct); % 这里是拓扑结构要求的所有分枝
+    
+    for i = 1:length(fields)
+        fn = fields{i};
+        % 如果用户表里也有这个分枝，就用用户的参数覆盖默认值
+        if isfield(user_struct, fn)
+            final_struct.(fn) = user_struct.(fn);
+        end
     end
 end
 
