@@ -551,131 +551,112 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
     disp('--- 3.3 所有系统参数定义和打包完成 ---');
     disp('=== 3. 系统拓扑与参数定义完成 ===');
     disp(newline);    
-    %% === 3.5 静态分析：计算重力引起的初始位移 ===
-    % 本部分根据系统拓扑和参数，建立静态有限元模型，求解在重力作用下的平衡位移。
+    %% === 3.5 静态分析：计算重力引起的初始位移(Newton-Raphson 非线性迭代) ===
+    % 本部分使用数值迭代算法求解非线性平衡方程: F_int(u) = F_ext
+    % 核心理论: Newton-Raphson 方法 + 载荷分步 (Load Stepping)
+    % 解决痛点: 当存在巨大非线性刚度(K3)时，线性解会导致初始力过大引发仿真崩溃。
+    
     disp(newline);
-    disp('=== 3.5 开始进行静态分析以计算重力初始位移 ===');
+    disp('=== 3.5 开始进行静态分析 (非线性理论版) ===');
     
     initial_conditions_map = containers.Map('KeyType', 'char', 'ValueType', 'any');
     
     if gravity_g ~= 0
-        disp('重力不为零，开始构建并求解静态平衡方程 K * U = F...');
-    
-        % 准备静态分析所需的参数结构体
-        model_build_params = struct();
-        model_build_params.config = config;
-        model_build_params.gravity_g = gravity_g;
-        model_build_params.parameters = struct();
+        fprintf('  [Nonlinear Theory] 启动牛顿-拉夫逊迭代求解器...\n');
         
-        % 1. 获取源数据
-        if isfield(sim_params, 'predefined_params')
-            source_params = sim_params.predefined_params;
-        else
-            error('Build_Extended:MissingPredefined', 'sim_params 中严重缺少 predefined_params。');
-        end
-        
-        % 2. 初始化 Cell 数组
-        model_build_params.parameters.primary = {};
-        model_build_params.parameters.secondary = {};
-        model_build_params.parameters.tertiary = {};
-        
-        % 3. 智能解析 Px_Sy_Tz
-        param_names = fieldnames(source_params);
-        for k = 1:length(param_names)
-            p_name = param_names{k};
-            p_val = source_params.(p_name);
-            
-            % 解析三级 (P1_S1_T1)
-            tokens_t = sscanf(p_name, 'P%d_S%d_T%d');
-            if ~isempty(tokens_t) && length(tokens_t) == 3
-                p = tokens_t(1); s = tokens_t(2); t = tokens_t(3);
-                model_build_params.parameters.tertiary{p}{s}{t} = p_val;
-                continue;
-            end
-            
-            % 解析二级 (P1_S1)
-            tokens_s = sscanf(p_name, 'P%d_S%d');
-            if ~isempty(tokens_s) && length(tokens_s) == 2
-                p = tokens_s(1); s = tokens_s(2);
-                model_build_params.parameters.secondary{p}{s} = p_val;
-                continue;
-            end
-            
-            % 解析一级 (P1)
-            tokens_p = sscanf(p_name, 'P%d');
-            if ~isempty(tokens_p) && length(tokens_p) == 1
-                p = tokens_p(1);
-                model_build_params.parameters.primary{p} = p_val;
-                continue;
-            end
-        end
-        
-        fprintf('  [Static Analysis] 参数已重组为 Cell 数组 (Pri=%d个)\n', length(model_build_params.parameters.primary));
-        
-        % 4. 显式注入 trunk 参数 (保持不变)
-        if exist('trunk_params', 'var')
-            model_build_params.parameters.trunk = trunk_params;
-        elseif exist('sim_params', 'var') && isfield(sim_params, 'trunk')
-            model_build_params.parameters.trunk = sim_params.trunk;
-        else
-            error('Build_Extended:MissingTrunk', '无法找到 trunk 参数，静态分析无法继续。');
-        end
-        
-        % --- 步骤 1: 建立自由度(DOF)映射表 ---
-        disp('  步骤 1/4: 正在建立系统自由度(DOF)映射...');
+        % --- 1. 建立自由度映射 (DOF Map) ---
+        % 利用现有的辅助函数获取所有质量点列表
+        disp('  步骤 1/4: 建立系统自由度(DOF)索引...');
         dof_map = map_dofs_recursively_static(model_build_params.parameters);
         num_masses = length(dof_map);
-        num_dofs = num_masses * 2;
-        disp(['  DOF映射完成，共发现 ', num2str(num_masses), ' 个质量点 (', num2str(num_dofs), ' 个自由度)。']);
+        num_dofs = num_masses * 2; % 2D 模型: 每个质量点 2 个自由度 (X, Z)
         
-        % --- 步骤 2: 构建全局力和刚度矩阵 ---
-        disp('  步骤 2/4: 正在构建全局力向量 F 和刚度矩阵 K...');
-        
-        % 构建力向量 F (重力沿-Y方向作用)
-        F = zeros(num_dofs, 1);
-        for i = 1:num_masses
-            mass_val = dof_map{i}{2}; % 从DOF映射中获取质量
-            x_dof_idx = 2*i - 1;     % Y方向自由度的索引
-            F(x_dof_idx) = -mass_val * gravity_g; 
-        end
-        
-        % 调用辅助函数构建全局刚度矩阵 K
-        K = populate_K_matrix_static(dof_map, model_build_params.parameters);
-        disp('  K 和 F 矩阵构建完成。');
-    
-        % --- 步骤 3: 求解静态位移 ---
-        disp('  步骤 3/4: 正在求解线性方程组 K * U = F...');
-        if rcond(full(K)) < eps
-            warning('静态分析警告：全局刚度矩阵 K 是奇异的。求解可能不准确。');
-            U_static = pinv(full(K)) * F; 
-            disp('  已使用伪逆(pinv)进行求解。');
-        else
-            U_static = K \ F;
-            disp('  求解完成。');
-        end
-    
-        % --- 步骤 4: 存储初始条件到Map中 ---
-        disp('  步骤 4/4: 正在将静态位移结果存入 initial_conditions_map...');
+        % 建立 ID -> Index 的快速查找表
         mass_id_to_idx_map = containers.Map(cellfun(@(c) c{1}, dof_map, 'UniformOutput', false), 1:num_masses);
         
+        % --- 2. 构建目标外力向量 F_ext_total (重力) ---
+        F_ext_total = zeros(num_dofs, 1);
+        for i = 1:num_masses
+            mass_val = dof_map{i}{2};
+            % 在本模型中，X方向被定义为垂直方向 (承受重力)
+            x_dof_idx = 2*i - 1; 
+            F_ext_total(x_dof_idx) = -mass_val * gravity_g; 
+        end
+        
+        % --- 4. 执行 Newton-Raphson 求解 ---
+        disp('  步骤 2/4: 启动非线性求解 (Newton-Raphson + Load Stepping)...');
+        
+        U_sol = zeros(num_dofs, 1); % 初始猜测：0 位移
+        
+        % 载荷分步参数 (Load Stepping)
+        % 将重力分成 10 步加载，每步求解一个平衡点，以此作为下一步的初值
+        % 这样可以防止 K3 很大时一步加载直接发散
+        n_steps = 10; 
+        max_iter = 50;
+        tol = 1e-6;
+        
+        fprintf('    计划分 %d 步加载重力...\n', n_steps);
+        
+        for step = 1:n_steps
+            lambda = step / n_steps;        % 当前载荷比例 (0.1, 0.2, ... 1.0)
+            F_target = F_ext_total * lambda; % 当前步的目标外力
+            
+            % 内部牛顿迭代
+            converged = false;
+            for iter = 1:max_iter
+                % 组装当前状态的内力和切线刚度
+                [F_int, K_tan] = assemble_nonlinear_system(U_sol);
+                
+                % 计算残差 (不平衡力) R = F_int - F_ext
+                Residual = F_int - F_target;
+                res_norm = norm(Residual);
+                
+                % 检查收敛
+                if res_norm < tol
+                    converged = true;
+                    if step == n_steps || mod(step, 5) == 0
+                        fprintf('      [Step %d/%d] Converged at iter %d. Residual = %.2e\n', step, n_steps, iter, res_norm);
+                    end
+                    break;
+                end
+                
+                % 求解修正量: K_tan * dU = -Residual  =>  dU = -K_tan \ Residual
+                if rcond(full(K_tan)) < 1e-15
+                    % 防止刚度矩阵奇异 (例如刚度为0或甚至负刚度导致的不稳定)
+                    dU = -pinv(full(K_tan)) * Residual;
+                else
+                    dU = -K_tan \ Residual;
+                end
+                
+                % 更新位移
+                U_sol = U_sol + dU;
+            end
+            
+            if ~converged
+                warning('      [Warning] Step %d did not converge within %d iterations. Residual = %.2e', step, max_iter, res_norm);
+                % 策略: 如果不收敛，通常减小步长重试。这里简化处理，继续尝试下一步或保持当前值。
+            end
+        end
+        
+        disp('  步骤 3/4: 非线性平衡计算完成。');
+        
+        % --- 5. 存储结果 ---
+        disp('  步骤 4/4: 存储平衡位置到 initial_conditions_map...');
         all_mass_ids = keys(mass_id_to_idx_map);
         for i = 1:length(all_mass_ids)
             mass_id = all_mass_ids{i};
             idx = mass_id_to_idx_map(mass_id);
-            x_ic = U_static(2*idx - 1);
-            z_ic = U_static(2*idx);
+            x_ic = U_sol(2*idx - 1);
+            z_ic = U_sol(2*idx);
             initial_conditions_map(mass_id) = struct('x_ic', x_ic, 'z_ic', z_ic);
         end
-        disp('  初始条件映射表构建完成。');
-    
+        fprintf('  已更新 %d 个质量点的初始条件。\n', length(all_mass_ids));
+        
     else
-        disp('重力加速度为零，跳过静态分析。');
+        disp('重力加速度为零，跳过静态分析 (初始位移设为0)。');
     end
     
-    disp('=== 3.5 静态分析完成 ===');
-    disp(newline);
-    
-    % 更新 model_build_params
+    % 更新全局参数结构体
     model_build_params.initial_conditions = initial_conditions_map;
     
     disp('=== 3.5 静态分析完成 ===');
@@ -4513,7 +4494,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         
         sim_engine = struct();
         
-        %% 1. 参数-拓扑映射模块
+        % 1. 参数-拓扑映射模块
         fprintf('  [1] 构建参数-拓扑映射模块...\n');
         
         sim_engine.param_topology_map = buildParameterTopologyMap(...
@@ -4522,7 +4503,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         fprintf('      映射了 %d 个节点的参数\n', ...
             length(sim_engine.param_topology_map.node_ids));
         
-        %% 2. 局部自适应组装策略
+        % 2. 局部自适应组装策略
         fprintf('  [2] 配置局部自适应组装策略...\n');
         
         sim_engine.assembly_config = configureAdaptiveAssembly(unified_params);
@@ -4531,7 +4512,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             sum(~sim_engine.assembly_config.is_nonlinear), ...
             sum(sim_engine.assembly_config.is_nonlinear));
         
-        %% 3. 混合求解器配置
+        % 3. 混合求解器配置
         fprintf('  [3] 配置混合求解器...\n');
         
         sim_engine.solver_config = configureMixedSolver();
@@ -4540,14 +4521,14 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             sim_engine.solver_config.primary_solver, ...
             sim_engine.solver_config.backup_solver);
         
-        %% 4. 果实脱落逻辑配置
+        % 4. 果实脱落逻辑配置
         fprintf('  [4] 配置状态依赖脱落逻辑...\n');
         
         sim_engine.detachment_logic = configureDetachmentLogic(unified_params);
         
         fprintf('      脱落力模型: %s\n', sim_engine.detachment_logic.model_type);
         
-        %% 5. 输出记录配置
+        % 5. 输出记录配置
         fprintf('  [5] 配置输出记录器...\n');
         
         sim_engine.output_recorder = configureOutputRecorder();
@@ -4556,10 +4537,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
     end
     
     
-    %% =====================================================================
-    %% 【新增】参数-拓扑映射模块
-    %% =====================================================================
-    
+    % 参数-拓扑映射模块    
     function map = buildParameterTopologyMap(unified_params, tree_topology)
         % 构建参数-拓扑映射
         %
@@ -4625,9 +4603,7 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
     end
     
     
-    %% =====================================================================
-    %% 【新增】局部自适应组装策略
-    %% =====================================================================
+    % 局部自适应组装策略
     
     function config = configureAdaptiveAssembly(unified_params)
         % 配置局部自适应组装策略
@@ -5409,4 +5385,131 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
         
         fprintf('  已将识别的刚度阻尼参数应用到主干\n');
     end
+    
+
+    % 定义非线性系统组装函数 (Nested Function)
+    % 计算给定位移 u 下的：内力向量 (F_int) 和 切线刚度矩阵 (K_tan)
+    % 理论公式:
+    % F_element = k*delta + k3*delta^3
+    % K_tangent = k + 3*k3*delta^2
+    function [F_int, K_tan] = assemble_nonlinear_system(U_current)
+        F_int = zeros(num_dofs, 1);
+        K_tan = sparse(num_dofs, num_dofs);
+        
+        % 子函数：添加单个连接单元的贡献
+        function add_element_contribution(node_id, parent_id, k_lin_x, k3_x, k_lin_z, k3_z)
+            % 获取节点索引
+            idx_node = mass_id_to_idx_map(node_id);
+            dofs_node = [2*idx_node-1, 2*idx_node]; % [dof_x, dof_z]
+            u_node = U_current(dofs_node);
+            
+            % 获取父节点位移
+            if isempty(parent_id) % 连接到固定基座
+                u_parent = [0; 0];
+            else
+                idx_parent = mass_id_to_idx_map(parent_id);
+                dofs_parent = [2*idx_parent-1, 2*idx_parent];
+                u_parent = U_current(dofs_parent);
+            end
+            
+            % 计算相对位移 (Delta = Node - Parent)
+            delta = u_node - u_parent;
+            
+            % --- X 方向 (垂直) ---
+            % 内力: F = k*x + k3*x^3
+            fx = k_lin_x * delta(1) + k3_x * delta(1)^3;
+            % 切线刚度: dF/dx = k + 3*k3*x^2
+            ktx = k_lin_x + 3 * k3_x * delta(1)^2;
+            
+            % --- Z 方向 (水平) ---
+            fz = k_lin_z * delta(2) + k3_z * delta(2)^3;
+            ktz = k_lin_z + 3 * k3_z * delta(2)^2;
+            
+            % --- 组装到全局向量/矩阵 ---
+            % 1. 对当前节点 (Node) 的贡献 (正向力)
+            F_int(dofs_node(1)) = F_int(dofs_node(1)) + fx;
+            F_int(dofs_node(2)) = F_int(dofs_node(2)) + fz;
+            
+            K_tan(dofs_node(1), dofs_node(1)) = K_tan(dofs_node(1), dofs_node(1)) + ktx;
+            K_tan(dofs_node(2), dofs_node(2)) = K_tan(dofs_node(2), dofs_node(2)) + ktz;
+            
+            % 2. 对父节点 (Parent) 的贡献 (反作用力)
+            if ~isempty(parent_id)
+                F_int(dofs_parent(1)) = F_int(dofs_parent(1)) - fx;
+                F_int(dofs_parent(2)) = F_int(dofs_parent(2)) - fz;
+                
+                % 父节点对角块
+                K_tan(dofs_parent(1), dofs_parent(1)) = K_tan(dofs_parent(1), dofs_parent(1)) + ktx;
+                K_tan(dofs_parent(2), dofs_parent(2)) = K_tan(dofs_parent(2), dofs_parent(2)) + ktz;
+                
+                % 耦合非对角块
+                K_tan(dofs_node(1), dofs_parent(1)) = K_tan(dofs_node(1), dofs_parent(1)) - ktx;
+                K_tan(dofs_parent(1), dofs_node(1)) = K_tan(dofs_parent(1), dofs_node(1)) - ktx;
+                
+                K_tan(dofs_node(2), dofs_parent(2)) = K_tan(dofs_node(2), dofs_parent(2)) - ktz;
+                K_tan(dofs_parent(2), dofs_node(2)) = K_tan(dofs_parent(2), dofs_node(2)) - ktz;
+            end
+        end
+        
+        % 递归遍历参数结构体，为每个连接调用 add_element_contribution
+        % (这部分逻辑复用了 populate_K_matrix 的遍历结构)
+        function traverse_params(params, prefix, parent_id)
+            root_id = matlab.lang.makeValidName([prefix '_root_Mass']);
+            mid_id  = matlab.lang.makeValidName([prefix '_mid_Mass']);
+            tip_id  = matlab.lang.makeValidName([prefix '_tip_Mass']);
+            
+            % 辅助：安全获取参数，默认为0
+            function val = get_p(s, f), if isfield(s, f), val = s.(f); else, val = 0; end, end
+            
+            % 1. Root -> Parent (Base or Previous Tip)
+            k3x = get_p(params.root, 'k3_x_conn_to_base'); if isempty(parent_id), k3x = get_p(params.root, 'k3_x_conn_to_base'); else, k3x = get_p(params.root, 'k3_x_conn'); end
+            k3z = get_p(params.root, 'k3_z_conn_to_base'); if isempty(parent_id), k3z = get_p(params.root, 'k3_z_conn_to_base'); else, k3z = get_p(params.root, 'k3_z_conn'); end
+            kx_lin = isempty(parent_id) * params.root.k_x_conn_to_base + ~isempty(parent_id) * params.root.k_x_conn;
+            kz_lin = isempty(parent_id) * params.root.k_z_conn_to_base + ~isempty(parent_id) * params.root.k_z_conn;
+            
+            add_element_contribution(root_id, parent_id, kx_lin, k3x, kz_lin, k3z);
+            
+            % 2. Mid -> Root
+            k3x_m = get_p(params.mid, 'k3_x_conn'); k3z_m = get_p(params.mid, 'k3_z_conn');
+            add_element_contribution(mid_id, root_id, params.mid.k_x_conn, k3x_m, params.mid.k_z_conn, k3z_m);
+            
+            % 3. Tip -> Mid
+            k3x_t = get_p(params.tip, 'k3_x_conn'); k3z_t = get_p(params.tip, 'k3_z_conn');
+            add_element_contribution(tip_id, mid_id, params.tip.k_x_conn, k3x_t, params.tip.k_z_conn, k3z_t);
+            
+            % 4. Fruits (挂在 Tip 或 Mid) - 果柄通常视为线性，但此处保留接口
+            if isfield(params, 'fruit_at_tip')
+                fid = matlab.lang.makeValidName([prefix, '_Fruit_Mass']);
+                if isKey(mass_id_to_idx_map, fid)
+                    add_element_contribution(fid, tip_id, params.fruit_at_tip.k_pedicel_x, 0, params.fruit_at_tip.k_pedicel_z, 0);
+                end
+            end
+            if isfield(params, 'fruit_at_mid')
+                fid = matlab.lang.makeValidName([prefix, '_mid_Fruit_Mass']);
+                if isKey(mass_id_to_idx_map, fid)
+                    add_element_contribution(fid, mid_id, params.fruit_at_mid.k_pedicel_x, 0, params.fruit_at_mid.k_pedicel_z, 0);
+                end
+            end
+            
+            % 5. 递归子分枝
+            if isfield(params, 'secondary_branches')
+                for s=1:length(params.secondary_branches)
+                    traverse_params(params.secondary_branches{s}, [prefix, '_S', num2str(s)], tip_id);
+                end
+            end
+            if isfield(params, 'tertiary_branches')
+                for t=1:length(params.tertiary_branches)
+                    traverse_params(params.tertiary_branches{t}, [prefix, '_T', num2str(t)], tip_id);
+                end
+            end
+        end
+        
+        % 启动遍历
+        traverse_params(model_build_params.parameters.trunk, 'Trunk', []);
+        trunk_tip_id = matlab.lang.makeValidName('Trunk_tip_Mass');
+        for p=1:length(model_build_params.parameters.primary)
+            traverse_params(model_build_params.parameters.primary{p}, ['P', num2str(p)], trunk_tip_id);
+        end
+    end
+        
 end
