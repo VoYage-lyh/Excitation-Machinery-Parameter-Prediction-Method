@@ -3457,13 +3457,24 @@ function simulation_results = Build_Extended_MDOF_model(sim_params)
             try
                 if length(branch_indices) == 1
                     % Level 1: Primary
+                    % 直接从 primary 数组获取
                     current_branch_params = model_build_params_struct.parameters.primary{branch_indices(1)};
+                    
                 elseif length(branch_indices) == 2
                     % Level 2: Secondary {p}{s}
-                    current_branch_params = model_build_params_struct.parameters.secondary{branch_indices(1)}{branch_indices(2)};
+                    % 从对应的 Primary 分枝下的 secondary_branches 获取
+                    p_idx = branch_indices(1);
+                    s_idx = branch_indices(2);
+                    current_branch_params = model_build_params_struct.parameters.primary{p_idx}.secondary_branches{s_idx};
+                    
                 elseif length(branch_indices) == 3
                     % Level 3: Tertiary {p}{s}{t}
-                    current_branch_params = model_build_params_struct.parameters.tertiary{branch_indices(1)}{branch_indices(2)}{branch_indices(3)};
+                    % 从 Primary -> Secondary -> tertiary_branches 获取
+                    p_idx = branch_indices(1);
+                    s_idx = branch_indices(2);
+                    t_idx = branch_indices(3);
+                    current_branch_params = model_build_params_struct.parameters.primary{p_idx}.secondary_branches{s_idx}.tertiary_branches{t_idx};
+                    
                 else
                     error('不支持的分枝层级');
                 end
